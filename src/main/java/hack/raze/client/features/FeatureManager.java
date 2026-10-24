@@ -20,6 +20,7 @@ import hack.raze.client.features.impl.misc.AutoTotem;
 import hack.raze.client.features.impl.misc.ClickGUI;
 import hack.raze.client.features.impl.utility.HoverTotem;
 import hack.raze.client.features.impl.utility.JumpReset;
+import hack.raze.client.features.impl.utility.SilentRotation;
 import lombok.Getter;
 
 import java.util.*;
@@ -44,6 +45,7 @@ public class FeatureManager {
         features.add(new ClickGUI());
         features.add(new HoverTotem());
         features.add(new JumpReset());
+        features.add(new SilentRotation());
         features.add(new AutoTotem());
         features.add(new MaceSwap());
         features.add(new AutoMace());
