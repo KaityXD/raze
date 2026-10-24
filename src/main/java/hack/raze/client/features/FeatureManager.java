@@ -5,6 +5,7 @@ import hack.raze.client.Raze;
 import hack.raze.client.event.EventManager;
 import hack.raze.client.features.impl.combat.AimAssist;
 import hack.raze.client.features.impl.combat.AnchorMacro;
+import hack.raze.client.features.impl.combat.AutoMace;
 import hack.raze.client.features.impl.combat.AutoCrystal;
 import hack.raze.client.features.impl.combat.Backtrack;
 import hack.raze.client.features.impl.blatant.AutoAnchor;
@@ -45,6 +46,7 @@ public class FeatureManager {
         features.add(new JumpReset());
         features.add(new AutoTotem());
         features.add(new MaceSwap());
+        features.add(new AutoMace());
         features.add(new ShieldStun());
         features.add(new AimAssist());
         features.add(new CrystalAura());

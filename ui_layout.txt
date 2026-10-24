@@ -1,0 +1,138 @@
+==============================================================================================================
+                                       CLIENT UI LAYOUT (DETACHED PANELS)
+==============================================================================================================
+
+[SCREEN CANVAS: BLURRED GAME BACKGROUND]
+
+  ╭───────────────────────╮   ╭─────────────────────────────────────────────────────────────────────────╮
+  │          (E)          │   │ [ Protect ]   Replaces your name and skin everywhere they are shown     │
+  │                       │   ╰─────────────────────────────────────────────────────────────────────────╯
+  │ CATEGORIES            │
+  │                       │   ╭─────────────────────────────────────────╮
+  │   * Combat          v │   │ Main                                    │
+  │   * Movement        v │   │                                         │
+  │   * Visuals         v │   │ Toggle                            (o- ) │
+  │   * World           v │   │ Bind                    [ NONE ] [x] [*]│
+  │  ╭─────────────────╮  │   │ Visible                           (o- ) │
+  │  │ * Utility     v │  │   ╰─────────────────────────────────────────╯
+  │  ╰─────────────────╯  │
+  │     Anti Trap         │   ╭─────────────────────────────────────────╮
+  │     Auto Totem        │   │ Settings                                │
+  │     Auto Trap         │   │                                         │
+  │     Elytra Swap       │   │ Nickname                                │
+  │     Fast Use          │   │ ╭─────────────────────────────────────╮ │
+  │     Key Pearl         │   │ │ cyde                                │ │
+  │     MLG               │   │ ╰─────────────────────────────────────╯ │
+  │     Multi Use         │   │ Skin                                    │
+  │     Pearl Catch       │   │ ╭─────────────────────────────────────╮ │
+  │     Pearl Grapple     │   │ │ Notch                               │ │
+  │     Pot Refill        │   │ ╰─────────────────────────────────────╯ │
+  │     Smart Pot         │   ╰─────────────────────────────────────────╯
+  │     Totem Hand        │
+  │                       │
+  │                       │
+  │ Configs           [#] │
+  │ Friends           [@] │
+  │ Overlays          [=] │
+  │ Modify HUD        [+] │
+  ╰───────────────────────╯
+
+
+==============================================================================================================
+                                     PURE ASCII VERSION (COMPATIBILITY)
+==============================================================================================================
+
+  +-----------------------+   +-------------------------------------------------------------------------+
+  |          (E)          |   | [ Protect ]   Replaces your name and skin everywhere they are shown     |
+  |                       |   +-------------------------------------------------------------------------+
+  | CATEGORIES            |
+  |                       |   +-----------------------------------------+
+  |   * Combat          v |   | Main                                    |
+  |   * Movement        v |   |                                         |
+  |   * Visuals         v |   | Toggle                            (o- ) |
+  |   * World           v |   | Bind                    [ NONE ] [x] [*]|
+  |  +-----------------+  |   | Visible                           (o- ) |
+  |  | * Utility     v |  |   +-----------------------------------------+
+  |  +-----------------+  |
+  |     Anti Trap         |   +-----------------------------------------+
+  |     Auto Totem        |   | Settings                                |
+  |     Auto Trap         |   |                                         |
+  |     Elytra Swap       |   | Nickname                                |
+  |     Fast Use          |   | +-------------------------------------+ |
+  |     Key Pearl         |   | | cyde                                | |
+  |     MLG               |   | +-------------------------------------+ |
+  |     Multi Use         |   | Skin                                    |
+  |     Pearl Catch       |   | +-------------------------------------+ |
+  |     Pearl Grapple     |   | | Notch                               | |
+  |     Pot Refill        |   | +-------------------------------------+ |
+  |     Smart Pot         |   +-----------------------------------------+
+  |     Totem Hand        |
+  |                       |
+  |                       |
+  | Configs           [#] |
+  | Friends           [@] |
+  | Overlays          [=] |
+  | Modify HUD        [+] |
+  +-----------------------+
+
+
+==============================================================================================================
+                                           DETACHED UI ARCHITECTURE
+==============================================================================================================
+
+The UI is composed of floating, decoupled dark glass cards layered over a blurred world view:
+
+1. [BACKGROUND]
+   - Fullscreen blurred scene (Gaussian blur / backdrop filter over in-game view).
+
+2. [PANEL 1: FLOATING SIDEBAR] (Detached Left Panel)
+   - Dimensions: Full-height floating container, rounded corners.
+   - Header:
+       - Client Logo: Circular badge "(E)"
+       - Section Title: "CATEGORIES"
+   - Category Accordion List:
+       - Combat       (Collapsed)
+       - Movement     (Collapsed)
+       - Visuals      (Collapsed)
+       - World        (Collapsed)
+       - Utility      (Active / Expanded pill)
+           -> Sub-module item list:
+              - Anti Trap
+              - Auto Totem (highlighted active)
+              - Auto Trap
+              - Elytra Swap
+              - Fast Use
+              - Key Pearl
+              - MLG
+              - Multi Use
+              - Pearl Catch
+              - Pearl Grapple
+              - Pot Refill
+              - Smart Pot
+              - Totem Hand
+   - Bottom Dock / Quick Actions:
+       - Configs      [# / Settings icon]
+       - Friends      [@ / Users icon]
+       - Overlays     [= / Layers icon]
+       - Modify HUD   [+ / Transform icon]
+
+3. [PANEL 2: FLOATING HEADER BAR] (Detached Top Bar)
+   - Position: Placed top-center/right with gap margin from sidebar and top screen edge.
+   - Contents:
+       - Module Badge / Pill: "[ Protect ]"
+       - Description: "Replaces your name and skin everywhere they are shown"
+
+4. [PANEL 3: FLOATING MAIN CARD] (Detached Module Core Settings)
+   - Position: Below top header bar with vertical spacing.
+   - Controls:
+       - Section Title: "Main"
+       - "Toggle":  Toggle Switch [OFF: (o- ) / ON: (-o)]
+       - "Bind":    Keybind selector button [ NONE ] + Clear button [x] + Mode/Mouse picker [*]
+       - "Visible": Toggle Switch [OFF: (o- ) / ON: (-o)]
+
+5. [PANEL 4: FLOATING SETTINGS CARD] (Detached Module Extended Settings)
+   - Position: Below Main Card with vertical spacing.
+   - Controls:
+       - Section Title: "Settings"
+       - "Nickname" label -> Rounded Text Input Box containing "cyde"
+       - "Skin" label     -> Rounded Text Input Box containing "Notch"
