@@ -30,7 +30,6 @@ import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.enchantment.Enchantments;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 public class AutoMace extends Feature {
@@ -247,11 +246,14 @@ public class AutoMace extends Feature {
         return Math.hypot(yd, pd) <= half;
     }
 
+    private static final float AIM_TOLERANCE = 3.0F;
+    private static final double RANGE_EPSILON = 0.02D;
+
     private boolean reachable(LocalPlayer p, LivingEntity t) {
-        AABB box = t.getBoundingBox();
-        double reach = range.getValue();
-        if (box.distanceToSqr(p.getEyePosition()) > reach * reach) return false;
-        return TargetUtils.isTargetAllowed(t);
+        if (!TargetUtils.isTargetAllowed(t)) return false;
+        Vec3 aim = Aim.point(t, point(), 1.0F);
+        if (aim == null) return false;
+        return p.getEyePosition().distanceTo(aim) <= range.getValue() + RANGE_EPSILON;
     }
 
     private boolean aimed(LocalPlayer p, LivingEntity t) {
@@ -263,7 +265,16 @@ public class AutoMace extends Feature {
         float[] rr = RotationUtils.calculate(p.getEyePosition(1.0F), tp);
         float yd = Mth.wrapDegrees(RotationUtils.getSilentYaw() - rr[0]);
         float pd = RotationUtils.getSilentPitch() - rr[1];
-        return Math.abs(yd) <= 12.0F && Math.abs(pd) <= 12.0F;
+        if (Math.abs(yd) > AIM_TOLERANCE || Math.abs(pd) > AIM_TOLERANCE) return false;
+
+        return rayHits(p, t);
+    }
+
+    private boolean rayHits(LocalPlayer p, LivingEntity t) {
+        Vec3 eye = p.getEyePosition();
+        Vec3 look = RotationHandler.getRotationVector(RotationUtils.getSilentPitch(), RotationUtils.getSilentYaw());
+        Vec3 end = eye.add(look.scale(range.getValue() + RANGE_EPSILON));
+        return t.getBoundingBox().inflate(0.03D).clip(eye, end).isPresent();
     }
 
     private void trackFall(LocalPlayer p) {

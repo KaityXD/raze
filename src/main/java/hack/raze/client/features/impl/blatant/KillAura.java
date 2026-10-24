@@ -148,8 +148,13 @@ public class KillAura extends Feature {
         return d <= wr.getValue() || vis(p, l);
     }
 
+    private static final float AIM_TOLERANCE = 3.0F;
+    private static final double RANGE_EPSILON = 0.02D;
+
     private boolean ck(LocalPlayer p, LivingEntity t) {
-        if (p.distanceTo(t) > ar.getValue()) return false;
+        Vec3 aim = Aim.point(t, apm(), 1.0F);
+        if (aim == null) return false;
+        if (p.getEyePosition().distanceTo(aim) > ar.getValue() + RANGE_EPSILON) return false;
         return vis(p, t);
     }
 
@@ -167,7 +172,7 @@ public class KillAura extends Feature {
         float[] rr = RotationUtils.calculate(p.getEyePosition(1.0F), tp);
         float yd = Mth.wrapDegrees(RotationUtils.getSilentYaw() - rr[0]);
         float pd = RotationUtils.getSilentPitch() - rr[1];
-        if (Math.abs(yd) > 10.0F || Math.abs(pd) > 10.0F) return false;
+        if (Math.abs(yd) > AIM_TOLERANCE || Math.abs(pd) > AIM_TOLERANCE) return false;
 
         return rh(p, t);
     }
@@ -175,9 +180,9 @@ public class KillAura extends Feature {
     private boolean rh(LocalPlayer p, LivingEntity t) {
         Vec3 eye = p.getEyePosition();
         Vec3 look = RotationHandler.getRotationVector(RotationUtils.getSilentPitch(), RotationUtils.getSilentYaw());
-        Vec3 end = eye.add(look.scale(ar.getValue()));
+        Vec3 end = eye.add(look.scale(ar.getValue() + RANGE_EPSILON));
 
-        Optional<Vec3> hit = t.getBoundingBox().inflate(0.1).clip(eye, end);
+        Optional<Vec3> hit = t.getBoundingBox().inflate(0.03D).clip(eye, end);
         if (hit.isEmpty()) return false;
 
         BlockHitResult block = mc.level.clip(new ClipContext(eye, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p));
