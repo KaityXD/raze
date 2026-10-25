@@ -29,44 +29,58 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.item.MaceItem;
 import net.minecraft.world.item.enchantment.Enchantments;
 import net.minecraft.world.phys.Vec3;
 
 public class AutoMace extends Feature {
 
-    private final FloatSetting range = new FloatSetting(Concat.of("Range"), 3.0F, 1.0F, 6.0F, 0.1F, Concat.of(" blocks"));
-    private final FloatSetting aimRange = new FloatSetting(Concat.of("Aim Range"), 4.5F, 1.0F, 8.0F, 0.1F, Concat.of(" blocks"));
+    private final ModeSetting mode = new ModeSetting(Concat.of("Mode"), Concat.of("Silent"), Concat.of("Silent"), Concat.of("Smooth"));
+    private final FloatSetting range = new FloatSetting(Concat.of("Range"), 4.0F, 1.0F, 6.0F, 0.1F, Concat.of(" blocks"));
+    private final FloatSetting aimRange = new FloatSetting(Concat.of("Aim Range"), 5.0F, 1.0F, 8.0F, 0.1F, Concat.of(" blocks"));
     private final FloatSetting fov = new FloatSetting(Concat.of("FOV"), 360.0F, 5.0F, 360.0F, 5.0F);
     private final ModeSetting priority = new ModeSetting(Concat.of("Priority"), Concat.of("Distance"), Concat.of("Distance"), Concat.of("Lowest HP"));
     private final ModeSetting aimPoint = new ModeSetting(Concat.of("Aim Point"), Concat.of("Dynamic"), Concat.of("Dynamic"), Concat.of("Head"), Concat.of("Center"), Concat.of("Closest"));
-    private final FloatSetting aimSpeed = new FloatSetting(Concat.of("Aim Speed"), 7.0F, 0.5F, 20.0F, 0.5F);
+    private final FloatSetting aimSpeed = new FloatSetting(Concat.of("Aim Speed"), 10.0F, 0.5F, 20.0F, 0.5F);
 
     private final BoolSetting checkFalling = new BoolSetting(Concat.of("Check Falling"), true);
-    private final FloatSetting minFall = new FloatSetting(Concat.of("Min Fall Distance"), 3.0F, 1.0F, 10.0F, 0.5F, o -> checkFalling.getValue());
+    private final FloatSetting minFall = new FloatSetting(Concat.of("Min Fall Distance"), 1.5F, 0.5F, 10.0F, 0.5F, o -> checkFalling.getValue());
     private final FloatSetting densityThreshold = new FloatSetting(Concat.of("Density Threshold"), 5.0F, 1.0F, 20.0F, 0.5F);
     private final IntSetting reactionDelay = new IntSetting(Concat.of("Reaction Delay"), 0, 0, 500, " ms");
 
     private final BoolSetting shieldBreak = new BoolSetting(Concat.of("Stun Slam"), true);
+    private final BoolSetting fastStunSlam = new BoolSetting(Concat.of("Fast Stun Slam"), false, o -> shieldBreak.getValue());
+    private final IntSetting stunSlamDelay = new IntSetting(Concat.of("Stun Slam Delay"), 50, 0, 300, " ms", o -> shieldBreak.getValue() && !fastStunSlam.getValue());
+
     private final BoolSetting autoSwitch = new BoolSetting(Concat.of("Auto Switch"), true);
     private final BoolSetting stayOnMace = new BoolSetting(Concat.of("Stay On Mace"), false);
     private final BoolSetting swapBack = new BoolSetting(Concat.of("Swap Back On Hit"), true);
     private final IntSetting swapBackDelay = new IntSetting(Concat.of("Swap Back Delay"), 2, 0, 10, " ticks");
 
     private final BoolSetting retrySlam = new BoolSetting(Concat.of("Retry Slam"), true);
-    private final IntSetting retryDelay = new IntSetting(Concat.of("Retry Delay"), 250, 0, 1000, " ms");
+    private final IntSetting retryDelay = new IntSetting(Concat.of("Retry Delay"), 50, 0, 1000, " ms", o -> retrySlam.getValue());
 
     private LivingEntity target;
     private int lastAttackTick = -1;
     private long nextAttackAt;
     private long lastHitAt;
+    private long lastMaceHitTime;
     private int savedSlot = -1;
     private int restoreTick = -1;
+
+    // Open-respect fall tracking state
     private double fallStartY = -1.0D;
+    private boolean isFalling = false;
+    private boolean maceHit = false;
+
+    // Open-respect stun slam state
+    private int slamState = 0;
+    private long slamTimer = 0L;
 
     public AutoMace() {
         super(new FeatureInfo(
                 Concat.of("AutoMace"),
-                Concat.of("Killaura but for maces: aims, swaps to the best mace and slams"),
+                Concat.of("Auto Mace idk what to say just stop asking me nigga"),
                 Category.COMBAT
         ));
     }
@@ -80,7 +94,13 @@ public class AutoMace extends Feature {
     @Override
     public void onDisable() {
         super.onDisable();
+        if (RotationUtils.isControlledBy(this)) {
+            RotationUtils.stopTracking();
+        }
         if (SwapStateManager.isActive(this)) SwapStateManager.cancel(this);
+        if (savedSlot != -1 && mc.player != null && !stayOnMace.getValue()) {
+            InventoryUtils.setInvSlot(savedSlot);
+        }
         reset();
     }
 
@@ -89,9 +109,18 @@ public class AutoMace extends Feature {
         lastAttackTick = -1;
         nextAttackAt = 0L;
         lastHitAt = 0L;
+        lastMaceHitTime = 0L;
         savedSlot = -1;
         restoreTick = -1;
+        resetFall();
+    }
+
+    private void resetFall() {
+        isFalling = false;
         fallStartY = -1.0D;
+        maceHit = false;
+        slamState = 0;
+        slamTimer = 0L;
     }
 
     @EventSubscribe
@@ -107,9 +136,12 @@ public class AutoMace extends Feature {
 
         LocalPlayer p = mc.player;
         restoreSlotIfDue(p);
-        trackFall(p);
+        updateFall(p);
 
-        if (!canTarget(p)) {
+        double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
+
+        // Don't rotate on elytra, when not falling, or before reaching min fall distance
+        if (!shouldAim(p, fallDist)) {
             target = null;
             if (RotationUtils.isControlledBy(this)) {
                 RotationUtils.cleanup(this, true, aimSpeed.getValue() * 15.0F, aimSpeed.getValue() * 15.0F,
@@ -129,15 +161,41 @@ public class AutoMace extends Feature {
             return;
         }
 
+        Vec3 aimVec = Aim.point(target, point(), 1.0F);
+        if (aimVec == null) {
+            aimVec = target.position().add(0, target.getBbHeight() * 0.5, 0);
+        }
+
+        boolean isSilent = mode.is(Concat.of("Silent"));
         RotationUtils.aim(this)
                 .silent()
+                .priority(EventSubscribe.Priority.HIGHEST)
+                .aimType(isSilent ? RotationUtils.AimType.BLATANT : RotationUtils.AimType.REGULAR)
                 .speed(aimSpeed.getValue() * 15.0F)
-                .to(Aim.point(target, point(), 1.0F));
+                .to(aimVec);
+    }
+
+    private boolean shouldAim(LocalPlayer p, double fallDist) {
+        if (p.isFallFlying()) return false;
+        if (findAnyMace(p) == -1) return false;
+
+        if (checkFalling.getValue()) {
+            if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.05D) {
+                return false;
+            }
+            if (fallDist < minFall.getValue()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     @EventSubscribe
     private void mv(EventMove.Pre e) {
         if (!isEnabled()) return;
+        if (mc.player != null && mc.player.isFallFlying()) return;
+        if (!RotationUtils.isControlledBy(this)) return;
         if (!RotationHandler.isHasSilentRotation()) return;
         e.setYaw(RotationHandler.getServerYaw());
         e.setPitch(RotationHandler.getServerPitch());
@@ -150,47 +208,163 @@ public class AutoMace extends Feature {
 
         LocalPlayer p = mc.player;
         int tick = p.tickCount;
-        if (tick == lastAttackTick) return;
+        if (tick == lastAttackTick && slamState != 1) return;
 
         long now = System.currentTimeMillis();
         if (now < nextAttackAt) return;
 
+        double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
+
+        // Open-respect mid-air retry slam logic: resets hit flag if falling combo criteria met
+        if (maceHit && retrySlam.getValue()
+                && isFalling && p.getDeltaMovement().y < -0.05D
+                && fallDist >= minFall.getValue()
+                && p.getAttackStrengthScale(0.0F) >= 0.9F
+                && now - lastMaceHitTime >= retryDelay.getValue()) {
+            maceHit = false;
+            slamState = 0;
+        }
+
+        if (!checkFalling.getValue() && maceHit && p.getAttackStrengthScale(0.0F) >= 1.0F) {
+            maceHit = false;
+            slamState = 0;
+        }
+
+        if (!canAttack(p, fallDist)) return;
         if (!reachable(p, target)) return;
         if (!aimed(p, target)) return;
-        if (!timing(p)) return;
 
-        if (shieldBreak.getValue() && isBlocking(target)) {
-            if (breakShield(p, target)) {
-                lastAttackTick = tick;
-                nextAttackAt = now + 100L;
-                return;
+        // Open-respect Stun Slam logic
+        if (shieldBreak.getValue() && handleShieldBreak(p, target, fallDist)) {
+            return;
+        }
+
+        // Standard Mace attack
+        if (!maceHit) {
+            int mace = findMace(p, fallDist);
+            if (mace == -1) return;
+
+            int current = p.getInventory().getSelectedSlot();
+            if (mace != current) {
+                if (!autoSwitch.getValue()) return;
+                if (savedSlot == -1) savedSlot = current;
+                InventoryUtils.setInvSlot(mace);
+            }
+
+            attack(p, target);
+            registerMaceHit(p, mace);
+
+            long delay = reactionDelay.getValue();
+            nextAttackAt = now + Math.max(0, delay);
+        }
+    }
+
+    private void updateFall(LocalPlayer p) {
+        if (p.isFallFlying()) {
+            resetFall();
+            return;
+        }
+
+        boolean onGround = p.onGround();
+        double currentY = p.getY();
+        double yVel = p.getDeltaMovement().y;
+
+        if (onGround) {
+            if (isFalling) {
+                resetFall();
+            }
+
+            if (!stayOnMace.getValue() && savedSlot != -1) {
+                InventoryUtils.setInvSlot(savedSlot);
+                savedSlot = -1;
+                restoreTick = -1;
+            }
+            return;
+        }
+
+        if (fallStartY == -1.0D || currentY > fallStartY) {
+            fallStartY = currentY;
+        }
+
+        if (yVel > 0.05D) {
+            // Upward motion (bounce or rocket) allows next slam once falling starts again
+            if (maceHit) {
+                maceHit = false;
+                slamState = 0;
+            }
+        } else if (yVel < -0.05D) {
+            if (!isFalling) {
+                isFalling = true;
+                maceHit = false;
+                slamState = 0;
             }
         }
+    }
 
-        int mace = findMace(p);
-        if (mace == -1) return;
+    private boolean canAttack(LocalPlayer p, double fallDist) {
+        if (p.isFallFlying()) return false;
+        if (!checkFalling.getValue()) return true;
+        if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.05D) return false;
+        return fallDist >= minFall.getValue();
+    }
 
-        int current = p.getInventory().getSelectedSlot();
-        if (mace != current) {
-            if (!autoSwitch.getValue()) return;
-            if (savedSlot == -1) savedSlot = current;
-            InventoryUtils.setInvSlot(mace);
+    private boolean handleShieldBreak(LocalPlayer p, LivingEntity target, double fallDist) {
+        if (mc.gameMode == null || p == null) return false;
+
+        boolean targetBlocking = isBlocking(target);
+
+        if ((targetBlocking || slamState > 0) && shieldBreak.getValue()) {
+            int axeSlot = findAxe(p);
+            if (axeSlot != -1 && autoSwitch.getValue()) {
+                if (slamState == 0) {
+                    if (savedSlot == -1) savedSlot = p.getInventory().getSelectedSlot();
+                    InventoryUtils.setInvSlot(axeSlot);
+                    attack(p, target);
+
+                    slamState = 1;
+                    slamTimer = System.currentTimeMillis();
+
+                    if (fastStunSlam.getValue()) {
+                        int maceSlot = findMace(p, fallDist);
+                        if (maceSlot != -1) {
+                            InventoryUtils.setInvSlot(maceSlot);
+                            attack(p, target);
+                            slamState = 2;
+                            registerMaceHit(p, maceSlot);
+                        }
+                    }
+                    return true;
+                } else if (slamState == 1) {
+                    if (System.currentTimeMillis() - slamTimer >= stunSlamDelay.getValue()) {
+                        int maceSlot = findMace(p, fallDist);
+                        if (maceSlot != -1) {
+                            InventoryUtils.setInvSlot(maceSlot);
+                            attack(p, target);
+                            slamState = 2;
+                            registerMaceHit(p, maceSlot);
+                        }
+                    }
+                    return true;
+                } else if (slamState == 2) {
+                    return true;
+                }
+            }
         }
+        return false;
+    }
 
-        attack(p, target);
-        lastAttackTick = tick;
-        lastHitAt = now;
+    private void registerMaceHit(LocalPlayer p, int maceSlot) {
+        maceHit = true;
+        lastMaceHitTime = System.currentTimeMillis();
+        lastHitAt = lastMaceHitTime;
+        lastAttackTick = p.tickCount;
 
-        if (!stayOnMace.getValue() && swapBack.getValue() && savedSlot != -1 && mace != savedSlot) {
-            restoreTick = tick + swapBackDelay.getValue();
+        if (!stayOnMace.getValue() && swapBack.getValue() && savedSlot != -1 && maceSlot != savedSlot) {
+            restoreTick = p.tickCount + swapBackDelay.getValue();
         } else {
             savedSlot = -1;
             restoreTick = -1;
         }
-
-        long delay = reactionDelay.getValue();
-        if (retrySlam.getValue() && !p.onGround()) delay = Math.min(delay, retryDelay.getValue());
-        nextAttackAt = now + Math.max(0, delay);
     }
 
     private void restoreSlotIfDue(LocalPlayer p) {
@@ -201,7 +375,13 @@ public class AutoMace extends Feature {
         }
         savedSlot = -1;
         restoreTick = -1;
-        fallStartY = -1.0D;
+    }
+
+    private boolean reachable(LocalPlayer p, LivingEntity t) {
+        if (!TargetUtils.isTargetAllowed(t)) return false;
+        Vec3 aim = Aim.point(t, point(), 1.0F);
+        if (aim == null) return false;
+        return p.getEyePosition().distanceTo(aim) <= range.getValue();
     }
 
     private boolean valid(LocalPlayer p, LivingEntity t) {
@@ -212,7 +392,9 @@ public class AutoMace extends Feature {
             if (q.isCreative()) return false;
             if (PlayerUtils.isFriend(q.getGameProfile().name())) return false;
         }
-        if (t.distanceTo(p) > aimRange.getValue()) return false;
+        Vec3 aim = Aim.point(t, point(), 1.0F);
+        if (aim == null) return false;
+        if (p.getEyePosition().distanceTo(aim) > aimRange.getValue()) return false;
         return inFov(p, t);
     }
 
@@ -228,7 +410,9 @@ public class AutoMace extends Feature {
             if (!(entity instanceof LivingEntity living)) continue;
             if (!valid(p, living)) continue;
 
-            double score = lowestHp ? living.getHealth() : p.distanceTo(living);
+            Vec3 aim = Aim.point(living, point(), 1.0F);
+            double dist = aim != null ? p.getEyePosition().distanceTo(aim) : p.distanceTo(living);
+            double score = lowestHp ? living.getHealth() : dist;
             if (score < bestScore) {
                 bestScore = score;
                 best = living;
@@ -240,32 +424,27 @@ public class AutoMace extends Feature {
     private boolean inFov(LocalPlayer p, LivingEntity t) {
         float half = fov.getValue() / 2.0F;
         if (half >= 180.0F) return true;
-        float[] r = RotationUtils.calculate(p.getEyePosition(1.0F), Aim.point(t, point(), 1.0F));
+        Vec3 pt = Aim.point(t, point(), 1.0F);
+        if (pt == null) pt = t.position().add(0, t.getBbHeight() * 0.5, 0);
+        float[] r = RotationUtils.calculate(p.getEyePosition(1.0F), pt);
         float yd = Math.abs(Mth.wrapDegrees(r[0] - p.getYRot()));
         float pd = Math.abs(r[1] - p.getXRot());
         return Math.hypot(yd, pd) <= half;
     }
 
-    private static final float AIM_TOLERANCE = 3.0F;
-    private static final double RANGE_EPSILON = 0.02D;
-
-    private boolean reachable(LocalPlayer p, LivingEntity t) {
-        if (!TargetUtils.isTargetAllowed(t)) return false;
-        Vec3 aim = Aim.point(t, point(), 1.0F);
-        if (aim == null) return false;
-        return p.getEyePosition().distanceTo(aim) <= range.getValue() + RANGE_EPSILON;
-    }
-
     private boolean aimed(LocalPlayer p, LivingEntity t) {
-        if (!RotationUtils.hasSilentRotation()) return false;
+        if (mode.is(Concat.of("Silent"))) {
+            return RotationUtils.hasSilentRotation() || RotationUtils.isControlledBy(this);
+        }
 
         Vec3 tp = Aim.point(t, point(), 1.0F);
-        if (tp == null) return false;
+        if (tp == null) tp = t.position().add(0, t.getBbHeight() * 0.5, 0);
 
         float[] rr = RotationUtils.calculate(p.getEyePosition(1.0F), tp);
-        float yd = Mth.wrapDegrees(RotationUtils.getSilentYaw() - rr[0]);
-        float pd = RotationUtils.getSilentPitch() - rr[1];
-        if (Math.abs(yd) > AIM_TOLERANCE || Math.abs(pd) > AIM_TOLERANCE) return false;
+        float yd = Math.abs(Mth.wrapDegrees(RotationUtils.getSilentYaw() - rr[0]));
+        float pd = Math.abs(RotationUtils.getSilentPitch() - rr[1]);
+
+        if (yd <= 35.0F && pd <= 35.0F) return true;
 
         return rayHits(p, t);
     }
@@ -273,34 +452,8 @@ public class AutoMace extends Feature {
     private boolean rayHits(LocalPlayer p, LivingEntity t) {
         Vec3 eye = p.getEyePosition();
         Vec3 look = RotationHandler.getRotationVector(RotationUtils.getSilentPitch(), RotationUtils.getSilentYaw());
-        Vec3 end = eye.add(look.scale(range.getValue() + RANGE_EPSILON));
-        return t.getBoundingBox().inflate(0.03D).clip(eye, end).isPresent();
-    }
-
-    private void trackFall(LocalPlayer p) {
-        if (p.onGround()) {
-            fallStartY = -1.0D;
-            return;
-        }
-        if (fallStartY == -1.0D || p.getY() > fallStartY) {
-            fallStartY = p.getY();
-        }
-    }
-
-    private double fallHeight(LocalPlayer p) {
-        if (fallStartY == -1.0D) return 0.0D;
-        return Math.max(0.0D, fallStartY - p.getY());
-    }
-
-    private boolean canTarget(LocalPlayer p) {
-        if (!checkFalling.getValue()) return true;
-        if (p.onGround() || p.isFallFlying()) return false;
-        if (p.getDeltaMovement().y >= -0.05D) return false;
-        return fallHeight(p) >= minFall.getValue();
-    }
-
-    private boolean timing(LocalPlayer p) {
-        return canTarget(p);
+        Vec3 end = eye.add(look.scale(range.getValue() + 0.5D));
+        return t.getBoundingBox().inflate(0.2D).clip(eye, end).isPresent();
     }
 
     private boolean isBlocking(LivingEntity t) {
@@ -308,30 +461,23 @@ public class AutoMace extends Feature {
         return q.isBlocking();
     }
 
-    private boolean breakShield(LocalPlayer p, LivingEntity t) {
-        int axe = findAxe(p);
-        if (axe == -1) return false;
-        if (p.getInventory().getSelectedSlot() != axe) {
-            InventoryUtils.setInvSlot(axe);
-            return false;
-        }
-        attack(p, t);
-        return true;
-    }
-
-    private int findMace(LocalPlayer p) {
-        boolean falling = p.fallDistance >= densityThreshold.getValue();
-        int preferred = falling
+    private int findMace(LocalPlayer p, double fallDistance) {
+        boolean useDensity = p.fallDistance >= densityThreshold.getValue() || fallDistance >= densityThreshold.getValue();
+        int preferred = useDensity
                 ? InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.DENSITY, false)
                 : InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.BREACH, false);
         if (preferred != -1) return preferred;
 
-        int fallback = falling
+        int fallback = useDensity
                 ? InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.BREACH, false)
                 : InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.DENSITY, false);
         if (fallback != -1) return fallback;
 
-        return InventoryUtils.findItemWithPredicateInHotbar(stack -> stack.getItem() == Items.MACE);
+        return InventoryUtils.findItemWithPredicateInHotbar(stack -> stack.getItem() == Items.MACE || stack.getItem() instanceof MaceItem);
+    }
+
+    private int findAnyMace(LocalPlayer p) {
+        return InventoryUtils.findItemWithPredicateInHotbar(stack -> stack.getItem() == Items.MACE || stack.getItem() instanceof MaceItem);
     }
 
     private int findAxe(LocalPlayer p) {
