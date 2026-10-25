@@ -21,6 +21,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -36,7 +37,7 @@ public class KillAura extends Feature {
 
     private final ModeSetting md = new ModeSetting("Mode", "Cooldown", "CPS", "Cooldown");
     private final FloatSetting cps = new FloatSetting("CPS", 8.0F, 0.0F, 20.0F, 0.5F, o -> md.is("CPS"));
-    private final ModeSetting ap = new ModeSetting("Aim Point", "Dynamic", "Dynamic", "Head", "Center", "Closest");
+    private final ModeSetting ap = new ModeSetting("Aim Point", "Respect Closed", "Respect Closed", "Respect Closest", "Dynamic", "Head", "Center", "Closest");
     private final FloatSetting sp = new FloatSetting("Aim Speed", 7.0F, 0.5F, 20.0F, 0.5F);
 
     private LivingEntity tg;
@@ -148,13 +149,16 @@ public class KillAura extends Feature {
         return d <= wr.getValue() || vis(p, l);
     }
 
-    private static final float AIM_TOLERANCE = 3.0F;
-    private static final double RANGE_EPSILON = 0.02D;
+    private double maxReach(LocalPlayer p) {
+        double limit = p.isCreative() ? 5.0D : 2.95D;
+        return Math.min((double) ar.getValue(), limit);
+    }
 
     private boolean ck(LocalPlayer p, LivingEntity t) {
-        Vec3 aim = Aim.point(t, apm(), 1.0F);
-        if (aim == null) return false;
-        if (p.getEyePosition().distanceTo(aim) > ar.getValue() + RANGE_EPSILON) return false;
+        if (t == null || !t.isAlive() || t.isRemoved()) return false;
+        AABB box = t.getBoundingBox();
+        double distToBox = Math.sqrt(box.distanceToSqr(p.getEyePosition()));
+        if (distToBox > maxReach(p)) return false;
         return vis(p, t);
     }
 
@@ -165,25 +169,28 @@ public class KillAura extends Feature {
 
     private boolean am(LocalPlayer p, LivingEntity t) {
         if (!RotationUtils.hasSilentRotation()) return false;
-
-        Vec3 tp = Aim.point(t, apm(), 1.0F);
-        if (tp == null) return false;
-
-        float[] rr = RotationUtils.calculate(p.getEyePosition(1.0F), tp);
-        float yd = Mth.wrapDegrees(RotationUtils.getSilentYaw() - rr[0]);
-        float pd = RotationUtils.getSilentPitch() - rr[1];
-        if (Math.abs(yd) > AIM_TOLERANCE || Math.abs(pd) > AIM_TOLERANCE) return false;
-
         return rh(p, t);
     }
 
     private boolean rh(LocalPlayer p, LivingEntity t) {
+        if (t == null || !t.isAlive() || t.isRemoved()) return false;
         Vec3 eye = p.getEyePosition();
-        Vec3 look = RotationHandler.getRotationVector(RotationUtils.getSilentPitch(), RotationUtils.getSilentYaw());
-        Vec3 end = eye.add(look.scale(ar.getValue() + RANGE_EPSILON));
+        AABB box = t.getBoundingBox();
+        double maxAllowed = maxReach(p);
 
-        Optional<Vec3> hit = t.getBoundingBox().inflate(0.03D).clip(eye, end);
+        double distToBox = Math.sqrt(box.distanceToSqr(eye));
+        if (distToBox > maxAllowed) return false;
+
+        if (box.contains(eye)) return true;
+
+        Vec3 look = RotationHandler.getRotationVector(RotationUtils.getSilentPitch(), RotationUtils.getSilentYaw());
+        Vec3 end = eye.add(look.scale(maxAllowed));
+
+        Optional<Vec3> hit = box.clip(eye, end);
         if (hit.isEmpty()) return false;
+
+        double dist = eye.distanceTo(hit.get());
+        if (dist > maxAllowed) return false;
 
         BlockHitResult block = mc.level.clip(new ClipContext(eye, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, p));
         return block.getType() == HitResult.Type.MISS
@@ -204,6 +211,7 @@ public class KillAura extends Feature {
     private Aim.Point apm() {
         if (ap.is("Head")) return Aim.Point.HEAD;
         if (ap.is("Center")) return Aim.Point.CENTER;
+        if (ap.is("Respect Closed") || ap.is("Respect Closest")) return Aim.Point.RESPECT_CLOSEST;
         if (ap.is("Closest")) return Aim.Point.CLOSEST;
         return Aim.Point.DYNAMIC;
     }

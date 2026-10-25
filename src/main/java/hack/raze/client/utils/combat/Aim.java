@@ -19,7 +19,8 @@ public final class Aim implements Imports {
         HEAD,
         CENTER,
         CLOSEST,
-        DYNAMIC
+        DYNAMIC,
+        RESPECT_CLOSEST
     }
 
     public static Point resolve(LivingEntity target, Point mode, float partialTick) {
@@ -63,11 +64,25 @@ public final class Aim implements Imports {
                 return head;
             case CENTER:
                 return center;
+            case RESPECT_CLOSEST:
+                return respectClosest(eye, box);
             case CLOSEST:
                 return closestPoint(eye, box);
             default:
                 return center;
         }
+    }
+
+    private static Vec3 respectClosest(Vec3 eye, AABB box) {
+        // Open-respect clamp to hitbox boundaries
+        double minX = Math.max(box.minX, Math.min(eye.x, box.maxX));
+        double minY = Math.max(box.minY, Math.min(eye.y, box.maxY));
+        double minZ = Math.max(box.minZ, Math.min(eye.z, box.maxZ));
+        Vec3 closest = new Vec3(minX, minY, minZ);
+
+        // Pull 10% toward center so the target point sits solidly inside the uninflated
+        // hitbox, guaranteeing look rays cleanly intersect the front face on the server.
+        return closest.lerp(box.getCenter(), 0.10D);
     }
 
     private static Vec3 closestPoint(Vec3 eye, AABB box) {

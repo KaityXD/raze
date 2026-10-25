@@ -3,6 +3,7 @@ package hack.raze.client.features.impl.combat;
 import hack.raze.client.api.ScreenCompat;
 import hack.raze.client.event.EventSubscribe;
 import hack.raze.client.event.impl.EventMove;
+import hack.raze.client.event.impl.EventSystemUpdate;
 import hack.raze.client.features.Category;
 import hack.raze.client.features.Feature;
 import hack.raze.client.features.FeatureInfo;
@@ -27,19 +28,27 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.AxeItem;
 import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.MaceItem;
+import net.minecraft.world.item.ShieldItem;
 import net.minecraft.world.item.enchantment.Enchantments;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+
+import java.util.Optional;
 
 public class AutoMace extends Feature {
 
     private final ModeSetting mode = new ModeSetting(Concat.of("Mode"), Concat.of("Silent"), Concat.of("Silent"), Concat.of("Smooth"));
-    private final FloatSetting range = new FloatSetting(Concat.of("Range"), 4.0F, 1.0F, 6.0F, 0.1F, Concat.of(" blocks"));
+    private final FloatSetting range = new FloatSetting(Concat.of("Range"), 3.0F, 1.0F, 6.0F, 0.1F, Concat.of(" blocks"));
     private final FloatSetting aimRange = new FloatSetting(Concat.of("Aim Range"), 5.0F, 1.0F, 8.0F, 0.1F, Concat.of(" blocks"));
     private final FloatSetting fov = new FloatSetting(Concat.of("FOV"), 360.0F, 5.0F, 360.0F, 5.0F);
     private final ModeSetting priority = new ModeSetting(Concat.of("Priority"), Concat.of("Distance"), Concat.of("Distance"), Concat.of("Lowest HP"));
-    private final ModeSetting aimPoint = new ModeSetting(Concat.of("Aim Point"), Concat.of("Dynamic"), Concat.of("Dynamic"), Concat.of("Head"), Concat.of("Center"), Concat.of("Closest"));
+    private final ModeSetting aimPoint = new ModeSetting(Concat.of("Aim Point"), Concat.of("Respect Closed"), Concat.of("Respect Closed"), Concat.of("Respect Closest"), Concat.of("Dynamic"), Concat.of("Head"), Concat.of("Center"), Concat.of("Closest"));
     private final FloatSetting aimSpeed = new FloatSetting(Concat.of("Aim Speed"), 10.0F, 0.5F, 20.0F, 0.5F);
 
     private final BoolSetting checkFalling = new BoolSetting(Concat.of("Check Falling"), true);
@@ -48,7 +57,6 @@ public class AutoMace extends Feature {
     private final IntSetting reactionDelay = new IntSetting(Concat.of("Reaction Delay"), 0, 0, 500, " ms");
 
     private final BoolSetting shieldBreak = new BoolSetting(Concat.of("Stun Slam"), true);
-
     private final IntSetting stunSlamDelay = new IntSetting(Concat.of("Stun Slam Delay"), 50, 0, 300, " ms", o -> shieldBreak.getValue());
 
     private final BoolSetting autoSwitch = new BoolSetting(Concat.of("Auto Switch"), true);
@@ -60,33 +68,17 @@ public class AutoMace extends Feature {
             Concat.of("Restore Delay"), 0, 0, 20, " ticks", o -> restore.getValue()
     ).describedBy(Concat.of("Ticks to wait before swapping back"));
 
-    // -- Hardcoded tuning ----------------------------------------------------
-
-    /** Retry slam is always on with a fixed cooldown; users don't need to tune it. */
-    private static final boolean RETRY_SLAM = true;
     private static final long RETRY_DELAY_MS = 50L;
-
-    /** Partial tick used for eye position / hip point lookups (1.0 = newest position). */
     private static final float AIM_PARTIAL_TICK = 1.0F;
-
-    /** Auto switch target slot when nothing suitable is in the hotbar. */
     private static final int NO_SLOT = -1;
-
-    // -- State ---------------------------------------------------------------
 
     private LivingEntity target;
     private long lastMaceHitTime;
     private int savedSlot = NO_SLOT;
 
-    /**
-     * Absolute time (ms) at which the previous slot should be restored. The reference module
-     * schedules this 50ms after a hit; here it is driven by the "Restore Delay" setting,
-     * which is in ticks, so it is converted with 50ms per tick.
-     */
     private long restoreAt;
     private boolean restorePending;
 
-    /** Tick of the last hotbar change. One slot change per tick, attacks may share the tick. */
     private int lastSwapTick = Integer.MIN_VALUE;
 
     private double fallStartY = -1.0D;
@@ -118,6 +110,7 @@ public class AutoMace extends Feature {
     public void onDisable() {
         super.onDisable();
         if (RotationUtils.isControlledBy(this)) {
+            RotationUtils.tryTakeControl(this, EventSubscribe.Priority.HIGHEST);
             RotationUtils.stopTracking();
         }
         if (SwapStateManager.isActive(this)) SwapStateManager.cancel(this);
@@ -148,52 +141,38 @@ public class AutoMace extends Feature {
         slamTimer = 0L;
     }
 
-    // -- Main loop -----------------------------------------------------------
-
     /**
-     * The whole module runs from the motion PRE event, exactly like the reference
-     * implementation. This fires before {@code sendPosition()} builds the movement packet,
-     * so every packet we emit here (slot change, interact, swing) is ordered ahead of the
-     * move packet for the same tick instead of trailing it.
-     *
-     * That ordering is what the "PacketOrderO / Post ... held item change" checks look at.
-     * Emitting the attack from the POST phase (after the move packet was already flushed)
-     * is what produced the flagged HELD_ITEM_CHANGE -> INTERACT_ENTITY -> ANIMATION trio.
+     * Silent rotations are calculated and applied during EventSystemUpdate before player
+     * movement simulation (aiStep). This ensures StrafeFix aligns movement physics with
+     * the silent rotation, completely eliminating anticheat Simulation flags.
      */
     @EventSubscribe
-    private void onMotionPre(EventMove.Pre event) {
+    private void onUpdate(EventSystemUpdate event) {
         if (!isEnabled() || isNull() || ScreenCompat.hasScreen(mc)) {
             target = null;
+            cleanupAim();
             return;
         }
 
         LocalPlayer p = mc.player;
         updateFall(p);
-        try {
-            tickAimAndAttack(event, p);
-        } finally {
-            // Always last, so a swap-to-mace keeps the tick's one slot change and the
-            // restore simply slides to the next tick instead of cancelling the attack.
-            processPendingRestore(p);
-        }
-    }
 
-    private void tickAimAndAttack(EventMove.Pre event, LocalPlayer p) {
         if (p.isFallFlying()) {
             target = null;
+            cleanupAim();
             return;
         }
 
-        // No mace anywhere in the hotbar -> nothing to do.
         if (findAnyMace(p) == NO_SLOT) {
             target = null;
+            cleanupAim();
             return;
         }
 
         double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
 
         if (checkFalling.getValue()) {
-            if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.1D) {
+            if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.05D) {
                 target = null;
                 cleanupAim();
                 return;
@@ -213,16 +192,39 @@ public class AutoMace extends Feature {
             return;
         }
 
-        // Aim first, then verify the rotation we are about to send actually points at the
-        // target's hitbox inside reach. This is the same thing the server's attack raycast
-        // validates, so passing here means there is nothing left to flag.
         if (!applyAim(p, target)) {
             cleanupAim();
             return;
         }
-        syncRotation(event, p);
+    }
 
-        if (!aimed(p, target)) return;
+    /**
+     * Pre-motion hook: syncs the move packet yaw/pitch with our aimed rotation and
+     * executes hotbar swaps and attacks BEFORE the tick's flying packet to avoid
+     * Grim Post and PacketOrder flags.
+     */
+    @EventSubscribe
+    private void onMotionPre(EventMove.Pre event) {
+        if (!isEnabled() || isNull() || ScreenCompat.hasScreen(mc)) {
+            target = null;
+            return;
+        }
+
+        LocalPlayer p = mc.player;
+        updateFall(p);
+        try {
+            syncRotation(event, p);
+            tickAttack(event, p);
+        } finally {
+            processPendingRestore(p);
+        }
+    }
+
+    private void tickAttack(EventMove.Pre event, LocalPlayer p) {
+        if (p.isFallFlying()) return;
+        if (target == null || !valid(p, target)) return;
+
+        double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
         if (!canAttack(p, fallDist)) return;
 
         if (!wasTargetingLastFrame) {
@@ -231,8 +233,9 @@ public class AutoMace extends Feature {
             wasTargetingLastFrame = true;
         }
 
-        if (maceHit && RETRY_SLAM
-                && isFalling && p.getDeltaMovement().y < -0.1D
+        // Slam already registered but we're still falling with a charged cooldown -> allow another.
+        if (maceHit
+                && isFalling && p.getDeltaMovement().y < -0.05D
                 && fallDist >= minFall.getValue()
                 && p.getAttackStrengthScale(0.0F) >= 0.9F
                 && System.currentTimeMillis() - lastMaceHitTime >= RETRY_DELAY_MS) {
@@ -240,17 +243,84 @@ public class AutoMace extends Feature {
             slamState = 0;
         }
 
+        // Without fall checks the hit can come while grounded; reset once the cooldown is full again.
         if (!checkFalling.getValue() && maceHit && p.getAttackStrengthScale(0.0F) >= 1.0F) {
             maceHit = false;
             slamState = 0;
         }
 
-        if (System.currentTimeMillis() - targetTime >= currentReactionDelay) {
-            handleMaceAttack(p, target, fallDist);
+        if (System.currentTimeMillis() - targetTime < currentReactionDelay) {
+            return;
         }
+
+        handleMaceAttack(p, target, fallDist);
     }
 
-    // -- Aim -----------------------------------------------------------------
+    private void handleMaceAttack(LocalPlayer p, LivingEntity t, double fallDist) {
+        if (mc.gameMode == null) return;
+
+        if (shieldBreak.getValue() && handleShieldBreak(p, t, fallDist)) {
+            return;
+        }
+
+        if (maceHit) return;
+
+        if (!isHoldingMace(p)) {
+            if (!autoSwitch.getValue()) return;
+            int maceSlot = findMace(p, fallDist);
+            if (maceSlot == NO_SLOT) return;
+            if (!swapTo(p, maceSlot)) return;
+        }
+
+        if (!isHoldingMace(p)) return;
+
+        if (!isRayReachable(p, t, range.getValue())) return;
+
+        int maceSlot = p.getInventory().getSelectedSlot();
+        attack(p, t);
+        registerMaceHit(p, maceSlot);
+    }
+
+    /**
+     * Two-step stun slam: axe hit to drop the shield, then mace hit after the delay.
+     * slamState 0 = idle, 1 = axe sent, 2 = mace sent.
+     */
+    private boolean handleShieldBreak(LocalPlayer p, LivingEntity t, double fallDist) {
+        if (mc.gameMode == null) return false;
+
+        boolean targetBlocking = isShieldBlocking(t);
+
+        if (shieldBreak.getValue() && (targetBlocking || slamState > 0)) {
+            int axeSlot = findAxe(p);
+            if (axeSlot != NO_SLOT && autoSwitch.getValue()) {
+                if (slamState == 0) {
+                    if (!isRayReachable(p, t, range.getValue())) return true;
+                    if (!swapTo(p, axeSlot)) return true;
+                    attack(p, t);
+
+                    slamState = 1;
+                    slamTimer = System.currentTimeMillis();
+                    return true;
+                } else if (slamState == 1) {
+                    if (System.currentTimeMillis() - slamTimer >= stunSlamDelay.getValue()) {
+                        int maceSlot = findMace(p, fallDist);
+                        if (maceSlot != NO_SLOT) {
+                            if (!isRayReachable(p, t, range.getValue())) return true;
+                            if (!swapTo(p, maceSlot)) return true;
+                            attack(p, t);
+                            slamState = 2;
+                            registerMaceHit(p, maceSlot);
+                        }
+                    }
+                    return true;
+                } else {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean applyAim(LocalPlayer p, LivingEntity t) {
         Vec3 aimVec = Aim.point(t, point(), AIM_PARTIAL_TICK);
         if (aimVec == null) {
@@ -273,10 +343,6 @@ public class AutoMace extends Feature {
                 RotationUtils.AimType.REGULAR, true);
     }
 
-    /**
-     * Writes the rotation we actually send into the outgoing move packet, so the server
-     * stores the same rotation it is going to validate the attack raycast against.
-     */
     private void syncRotation(EventMove.Pre event, LocalPlayer p) {
         if (!RotationUtils.isControlledBy(this)) return;
         if (p.isFallFlying()) return;
@@ -299,39 +365,54 @@ public class AutoMace extends Feature {
     }
 
     /**
-     * True when the ray along the rotation we actually sent hits the target's hitbox.
-     *
-     * The ray length and the inflation now BOTH come from the Range setting, so this check
-     * and reachable() cannot disagree, and there is no extra inflation on top of it.
+     * Ray from the eye along the rotation the server currently knows about. The
+     * hitbox intersection must fall within maxRange and no solid block may sit
+     * closer than the entity hit, otherwise the server rejects the attack.
      */
-    private boolean aimed(LocalPlayer p, LivingEntity t) {
-        Vec3 eye = p.getEyePosition(AIM_PARTIAL_TICK);
-        Vec3 look = RotationHandler.getRotationVector(sentPitch(), sentYaw());
-        Vec3 end = eye.add(look.scale(range.getValue()));
-        return t.getBoundingBox().clip(eye, end).isPresent();
-    }
-
-    // -- Reach ---------------------------------------------------------------
-    //
-    // Feet -> feet, exactly like every working client does it:
-    //   Open-respect : mc.player.distanceTo(target) > range
-    //   Vape-v4      : player.getDistanceToEntity(target) <= attackRange
-    //   Silkcc       : mc.player.distanceTo(entity) > range
-    // All three use vanilla Entity.distanceTo (feet-centre, 3D) and then let the game
-    // itself arbitrate the actual hit. Re-implementing the reach check client-side with a
-    // tighter eye->hitbox metric was our deviation; this matches them.
-
-    /** Vanilla Entity.distanceTo: feet-centre to feet-centre, 3D. */
-    private double feetDistance(LocalPlayer p, LivingEntity t) {
-        return p.distanceTo(t);
-    }
-
-    private boolean reachable(LocalPlayer p, LivingEntity t) {
+    private boolean isRayReachable(LocalPlayer p, LivingEntity t, double maxRange, float pitch, float yaw) {
+        if (p == null || t == null || !t.isAlive() || t.isRemoved()) return false;
         if (!TargetUtils.isTargetAllowed(t)) return false;
-        return feetDistance(p, t) <= range.getValue();
+
+        Vec3 eye = p.getEyePosition(AIM_PARTIAL_TICK);
+        AABB box = t.getBoundingBox();
+
+        double maxAllowed = Math.min(maxRange, 2.95D);
+        double distToBox = Math.sqrt(box.distanceToSqr(eye));
+        if (distToBox > maxAllowed) return false;
+
+        if (box.contains(eye)) return true;
+
+        Vec3 look = RotationHandler.getRotationVector(pitch, yaw);
+        Vec3 end = eye.add(look.scale(maxAllowed));
+
+        Optional<Vec3> hit = box.clip(eye, end);
+        if (hit.isEmpty()) return false;
+
+        double hitDistance = eye.distanceTo(hit.get());
+        if (hitDistance > maxAllowed) return false;
+
+        BlockHitResult blockHit = mc.level.clip(new ClipContext(
+                eye,
+                end,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.NONE,
+                p
+        ));
+
+        if (blockHit.getType() != HitResult.Type.MISS) {
+            double blockDistSqr = blockHit.getLocation().distanceToSqr(eye);
+            double entityDistSqr = hit.get().distanceToSqr(eye);
+            if (blockDistSqr < entityDistSqr) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    // -- Target selection ----------------------------------------------------
+    private boolean isRayReachable(LocalPlayer p, LivingEntity t, double maxRange) {
+        return isRayReachable(p, t, maxRange, sentPitch(), sentYaw());
+    }
 
     private boolean valid(LocalPlayer p, LivingEntity t) {
         if (!t.isAlive() || t.isRemoved() || t.isSpectator()) return false;
@@ -341,7 +422,7 @@ public class AutoMace extends Feature {
             if (q.isCreative()) return false;
             if (PlayerUtils.isFriend(q.getGameProfile().name())) return false;
         }
-        if (feetDistance(p, t) > aimRange.getValue()) return false;
+        if (p.distanceTo(t) > aimRange.getValue()) return false;
         return inFov(p, t);
     }
 
@@ -357,7 +438,7 @@ public class AutoMace extends Feature {
             if (!(entity instanceof LivingEntity living)) continue;
             if (!valid(p, living)) continue;
 
-            double score = lowestHp ? living.getHealth() : feetDistance(p, living);
+            double score = lowestHp ? living.getHealth() : p.distanceTo(living);
             if (score < bestScore) {
                 bestScore = score;
                 best = living;
@@ -377,35 +458,6 @@ public class AutoMace extends Feature {
         return Math.hypot(yd, pd) <= half;
     }
 
-    // -- Attack --------------------------------------------------------------
-
-    private void handleMaceAttack(LocalPlayer p, LivingEntity t, double fallDist) {
-        if (mc.gameMode == null) return;
-
-        if (shieldBreak.getValue() && handleShieldBreak(p, t, fallDist)) {
-            return;
-        }
-
-        if (maceHit) return;
-
-        if (!isHoldingMace(p)) {
-            if (!autoSwitch.getValue()) return;
-            int maceSlot = findMace(p, fallDist);
-            if (maceSlot == NO_SLOT) return;
-            if (!swapTo(p, maceSlot)) return;
-        }
-
-        if (!isHoldingMace(p)) return;
-
-        // Final sanity gate right before the swing, against the same hitbox metric the
-        // server uses. If the target drifted out of reach since selection, skip.
-        if (!reachable(p, t)) return;
-
-        int maceSlot = p.getInventory().getSelectedSlot();
-        attack(p, t);
-        registerMaceHit(p, maceSlot);
-    }
-
     private void attack(LocalPlayer p, LivingEntity t) {
         if (mc.gameMode == null) return;
         if (p.isUsingItem()) mc.gameMode.releaseUsingItem(p);
@@ -420,7 +472,6 @@ public class AutoMace extends Feature {
         lastMaceHitTime = now;
 
         if (restore.getValue() && savedSlot != NO_SLOT && maceSlot != savedSlot) {
-            // "Restore Delay" is in ticks; 50ms per tick, matching the reference's fixed 50ms.
             restoreAt = now + (restoreDelay.getValue() * 50L);
             restorePending = true;
         } else {
@@ -429,60 +480,16 @@ public class AutoMace extends Feature {
         }
     }
 
-    // -- Shield break --------------------------------------------------------
-
-    private boolean handleShieldBreak(LocalPlayer p, LivingEntity t, double fallDist) {
-        if (mc.gameMode == null) return false;
-
-        boolean targetBlocking = isBlocking(t);
-
-        if ((targetBlocking || slamState > 0) && shieldBreak.getValue()) {
-            int axeSlot = findAxe(p);
-            if (axeSlot != NO_SLOT && autoSwitch.getValue()) {
-                if (slamState == 0) {
-                    // Reach gate BEFORE the swap: this path used to attack unconditionally,
-                    // so an axe swing at 3.5 blocks sailed past every reach check.
-                    if (!reachable(p, t)) return true;
-                    if (!swapTo(p, axeSlot)) return true;
-                    attack(p, t);
-
-                    slamState = 1;
-                    slamTimer = System.currentTimeMillis();
-                    return true;
-                } else if (slamState == 1) {
-                    if (System.currentTimeMillis() - slamTimer >= stunSlamDelay.getValue()) {
-                        int maceSlot = findMace(p, fallDist);
-                        if (maceSlot != NO_SLOT) {
-                            // Same gate for the mace half of the stun slam.
-                            if (!reachable(p, t)) return true;
-                            if (!swapTo(p, maceSlot)) return true;
-                            attack(p, t);
-                            slamState = 2;
-                            registerMaceHit(p, maceSlot);
-                        }
-                    }
-                    return true;
-                } else {
-                    return true;
-                }
-            }
-        }
-        return false;
+    /** Vanilla shields only block after 5 ticks (250ms) of use, so ignore fresh raises. */
+    private boolean isShieldBlocking(LivingEntity t) {
+        if (!(t instanceof Player q)) return false;
+        if (q.isBlocking()) return q.getTicksUsingItem() >= 5;
+        if (!q.isUsingItem()) return false;
+        ItemStack useItem = q.getUseItem();
+        return !useItem.isEmpty() && useItem.getItem() instanceof ShieldItem && q.getTicksUsingItem() >= 5;
     }
 
-    // -- Slots ---------------------------------------------------------------
-
-    /**
-     * Changes the selected hotbar slot and flushes the carried-item packet immediately.
-     *
-     * The eager flush is the important part: if we let {@code gameMode.attack()} send it
-     * lazily, the SET_CARRIED_ITEM can end up ordered after the interact or after the move
-     * packet, which is what the packet-order checks flag. Sending it here guarantees
-     * HELD_ITEM_CHANGE always precedes INTERACT_ENTITY/ANIMATION for this tick.
-     *
-     * One slot change per tick is enforced; an attack in the same tick as that one change
-     * is allowed.
-     */
+    /** One hotbar change per tick, otherwise the server drops the second one. */
     private boolean setSlot(LocalPlayer p, int slot) {
         if (slot < 0 || slot > 8) return false;
         if (p.getInventory().getSelectedSlot() == slot) return true;
@@ -503,7 +510,6 @@ public class AutoMace extends Feature {
         }
     }
 
-    /** Swaps to {@code slot} and records the previous slot as the restore point. */
     private boolean swapTo(LocalPlayer p, int slot) {
         int previous = p.getInventory().getSelectedSlot();
         if (previous == slot) return true;
@@ -519,8 +525,6 @@ public class AutoMace extends Feature {
         savedSlot = NO_SLOT;
         restorePending = false;
     }
-
-    // -- Fall tracking -------------------------------------------------------
 
     private void updateFall(LocalPlayer p) {
         if (p.isFallFlying()) {
@@ -569,13 +573,11 @@ public class AutoMace extends Feature {
     private boolean canAttack(LocalPlayer p, double fallDist) {
         if (p.isFallFlying()) return false;
         if (!checkFalling.getValue()) return true;
-        if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.1D) return false;
+        if (p.onGround() || !isFalling || p.getDeltaMovement().y >= -0.05D) return false;
         return fallDist >= minFall.getValue();
     }
 
-    // -- Inventory helpers ---------------------------------------------------
-
-    private boolean isMaceStack(net.minecraft.world.item.ItemStack stack) {
+    private boolean isMaceStack(ItemStack stack) {
         if (stack == null || stack.isEmpty()) return false;
         return stack.getItem() == Items.MACE || stack.getItem() instanceof MaceItem;
     }
@@ -584,6 +586,7 @@ public class AutoMace extends Feature {
         return isMaceStack(p.getInventory().getItem(p.getInventory().getSelectedSlot()));
     }
 
+    /** Density pays off on long falls, breach on short ones; fall back to the other, then anything. */
     private int findMace(LocalPlayer p, double fallDistance) {
         boolean useDensity = p.fallDistance >= densityThreshold.getValue() || fallDistance >= densityThreshold.getValue();
         int preferred = useDensity
@@ -611,16 +614,10 @@ public class AutoMace extends Feature {
         return NO_SLOT;
     }
 
-    private boolean isBlocking(LivingEntity t) {
-        if (!(t instanceof Player q)) return false;
-        return q.isBlocking();
-    }
-
-    // -- Misc ----------------------------------------------------------------
-
     private Aim.Point point() {
         if (aimPoint.is(Concat.of("Head"))) return Aim.Point.HEAD;
         if (aimPoint.is(Concat.of("Center"))) return Aim.Point.CENTER;
+        if (aimPoint.is(Concat.of("Respect Closed")) || aimPoint.is(Concat.of("Respect Closest"))) return Aim.Point.RESPECT_CLOSEST;
         if (aimPoint.is(Concat.of("Closest"))) return Aim.Point.CLOSEST;
         return Aim.Point.DYNAMIC;
     }
