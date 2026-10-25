@@ -49,16 +49,20 @@ public class AutoMace extends Feature {
     private final IntSetting reactionDelay = new IntSetting(Concat.of("Reaction Delay"), 0, 0, 500, " ms");
 
     private final BoolSetting shieldBreak = new BoolSetting(Concat.of("Stun Slam"), true);
-    private final BoolSetting fastStunSlam = new BoolSetting(Concat.of("Fast Stun Slam"), false, o -> shieldBreak.getValue());
-    private final IntSetting stunSlamDelay = new IntSetting(Concat.of("Stun Slam Delay"), 50, 0, 300, " ms", o -> shieldBreak.getValue() && !fastStunSlam.getValue());
+
+    private final IntSetting stunSlamDelay = new IntSetting(Concat.of("Stun Slam Delay"), 50, 0, 300, " ms", o -> shieldBreak.getValue());
 
     private final BoolSetting autoSwitch = new BoolSetting(Concat.of("Auto Switch"), true);
-    private final BoolSetting stayOnMace = new BoolSetting(Concat.of("Stay On Mace"), false);
-    private final BoolSetting swapBack = new BoolSetting(Concat.of("Swap Back On Hit"), true);
-    private final IntSetting swapBackDelay = new IntSetting(Concat.of("Swap Back Delay"), 2, 0, 10, " ticks");
 
-    private final BoolSetting retrySlam = new BoolSetting(Concat.of("Retry Slam"), true);
-    private final IntSetting retryDelay = new IntSetting(Concat.of("Retry Delay"), 50, 0, 1000, " ms", o -> retrySlam.getValue());
+    private final BoolSetting restore = new BoolSetting(
+            Concat.of("Restore"), true
+    ).describedBy(Concat.of("Swap back to your previous slot after the hit instead of staying on the mace"));
+    private final IntSetting restoreDelay = new IntSetting(
+            Concat.of("Restore Delay"), 0, 0, 20, " ticks", o -> restore.getValue()
+    ).describedBy(Concat.of("Ticks to wait before swapping back"));
+
+    private static final boolean RETRY_SLAM = true;
+    private static final long RETRY_DELAY_MS = 50L;
 
     private LivingEntity target;
     private int lastAttackTick = -1;
@@ -68,12 +72,12 @@ public class AutoMace extends Feature {
     private int savedSlot = -1;
     private int restoreTick = -1;
 
-    // Open-respect fall tracking state
+    private int lastSwapTick = Integer.MIN_VALUE;
+
     private double fallStartY = -1.0D;
     private boolean isFalling = false;
     private boolean maceHit = false;
 
-    // Open-respect stun slam state
     private int slamState = 0;
     private long slamTimer = 0L;
 
@@ -98,7 +102,7 @@ public class AutoMace extends Feature {
             RotationUtils.stopTracking();
         }
         if (SwapStateManager.isActive(this)) SwapStateManager.cancel(this);
-        if (savedSlot != -1 && mc.player != null && !stayOnMace.getValue()) {
+        if (savedSlot != -1 && mc.player != null && restore.getValue()) {
             InventoryUtils.setInvSlot(savedSlot);
         }
         reset();
@@ -112,6 +116,7 @@ public class AutoMace extends Feature {
         lastMaceHitTime = 0L;
         savedSlot = -1;
         restoreTick = -1;
+        lastSwapTick = Integer.MIN_VALUE;
         resetFall();
     }
 
@@ -135,12 +140,10 @@ public class AutoMace extends Feature {
         }
 
         LocalPlayer p = mc.player;
-        restoreSlotIfDue(p);
         updateFall(p);
 
         double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
 
-        // Don't rotate on elytra, when not falling, or before reaching min fall distance
         if (!shouldAim(p, fallDist)) {
             target = null;
             if (RotationUtils.isControlledBy(this)) {
@@ -204,23 +207,29 @@ public class AutoMace extends Feature {
     @EventSubscribe
     private void onHandleInput(EventHandleInput.Early e) {
         if (!isEnabled() || isNull() || ScreenCompat.hasScreen(mc)) return;
-        if (target == null) return;
 
         LocalPlayer p = mc.player;
+        tryAttack(p);
+
+        restoreSlotIfDue(p);
+    }
+
+    private boolean tryAttack(LocalPlayer p) {
+        if (target == null) return false;
+
         int tick = p.tickCount;
-        if (tick == lastAttackTick && slamState != 1) return;
+        if (tick == lastAttackTick) return false;
 
         long now = System.currentTimeMillis();
-        if (now < nextAttackAt) return;
+        if (now < nextAttackAt) return false;
 
         double fallDist = fallStartY == -1.0D ? 0.0D : Math.max(0.0D, fallStartY - p.getY());
 
-        // Open-respect mid-air retry slam logic: resets hit flag if falling combo criteria met
-        if (maceHit && retrySlam.getValue()
+        if (maceHit && RETRY_SLAM
                 && isFalling && p.getDeltaMovement().y < -0.05D
                 && fallDist >= minFall.getValue()
                 && p.getAttackStrengthScale(0.0F) >= 0.9F
-                && now - lastMaceHitTime >= retryDelay.getValue()) {
+                && now - lastMaceHitTime >= RETRY_DELAY_MS) {
             maceHit = false;
             slamState = 0;
         }
@@ -230,33 +239,32 @@ public class AutoMace extends Feature {
             slamState = 0;
         }
 
-        if (!canAttack(p, fallDist)) return;
-        if (!reachable(p, target)) return;
-        if (!aimed(p, target)) return;
+        if (!canAttack(p, fallDist)) return false;
+        if (!reachable(p, target)) return false;
+        if (!aimed(p, target)) return false;
 
         // Open-respect Stun Slam logic
         if (shieldBreak.getValue() && handleShieldBreak(p, target, fallDist)) {
-            return;
+            return true;
         }
 
-        // Standard Mace attack
-        if (!maceHit) {
-            int mace = findMace(p, fallDist);
-            if (mace == -1) return;
+        if (maceHit) return false;
 
-            int current = p.getInventory().getSelectedSlot();
-            if (mace != current) {
-                if (!autoSwitch.getValue()) return;
-                if (savedSlot == -1) savedSlot = current;
-                InventoryUtils.setInvSlot(mace);
-            }
+        int mace = findMace(p, fallDist);
+        if (mace == -1) return false;
 
-            attack(p, target);
-            registerMaceHit(p, mace);
-
-            long delay = reactionDelay.getValue();
-            nextAttackAt = now + Math.max(0, delay);
+        int current = p.getInventory().getSelectedSlot();
+        if (mace != current) {
+            if (!autoSwitch.getValue()) return false;
+            if (!swapTo(p, mace)) return false;
         }
+
+        attack(p, target);
+        registerMaceHit(p, mace);
+
+        long delay = reactionDelay.getValue();
+        nextAttackAt = now + Math.max(0, delay);
+        return true;
     }
 
     private void updateFall(LocalPlayer p) {
@@ -274,10 +282,14 @@ public class AutoMace extends Feature {
                 resetFall();
             }
 
-            if (!stayOnMace.getValue() && savedSlot != -1) {
-                InventoryUtils.setInvSlot(savedSlot);
-                savedSlot = -1;
-                restoreTick = -1;
+
+            if (savedSlot != -1) {
+                if (restore.getValue()) {
+                    restoreTick = p.tickCount;
+                } else {
+                    savedSlot = -1;
+                    restoreTick = -1;
+                }
             }
             return;
         }
@@ -287,7 +299,6 @@ public class AutoMace extends Feature {
         }
 
         if (yVel > 0.05D) {
-            // Upward motion (bounce or rocket) allows next slam once falling starts again
             if (maceHit) {
                 maceHit = false;
                 slamState = 0;
@@ -317,28 +328,17 @@ public class AutoMace extends Feature {
             int axeSlot = findAxe(p);
             if (axeSlot != -1 && autoSwitch.getValue()) {
                 if (slamState == 0) {
-                    if (savedSlot == -1) savedSlot = p.getInventory().getSelectedSlot();
-                    InventoryUtils.setInvSlot(axeSlot);
+                    if (!swapTo(p, axeSlot)) return true;
                     attack(p, target);
 
                     slamState = 1;
                     slamTimer = System.currentTimeMillis();
-
-                    if (fastStunSlam.getValue()) {
-                        int maceSlot = findMace(p, fallDist);
-                        if (maceSlot != -1) {
-                            InventoryUtils.setInvSlot(maceSlot);
-                            attack(p, target);
-                            slamState = 2;
-                            registerMaceHit(p, maceSlot);
-                        }
-                    }
                     return true;
                 } else if (slamState == 1) {
                     if (System.currentTimeMillis() - slamTimer >= stunSlamDelay.getValue()) {
                         int maceSlot = findMace(p, fallDist);
                         if (maceSlot != -1) {
-                            InventoryUtils.setInvSlot(maceSlot);
+                            if (!swapTo(p, maceSlot)) return true;
                             attack(p, target);
                             slamState = 2;
                             registerMaceHit(p, maceSlot);
@@ -353,14 +353,33 @@ public class AutoMace extends Feature {
         return false;
     }
 
+
+    private boolean changeSlot(LocalPlayer p, int slot) {
+        if (slot < 0) return false;
+        if (p.getInventory().getSelectedSlot() == slot) return true;
+        if (p.tickCount == lastSwapTick) return false;
+        lastSwapTick = p.tickCount;
+        InventoryUtils.setInvSlot(slot);
+        return true;
+    }
+
+
+    private boolean swapTo(LocalPlayer p, int slot) {
+        int previous = p.getInventory().getSelectedSlot();
+        if (previous == slot) return true;
+        if (!changeSlot(p, slot)) return false;
+        if (savedSlot == -1) savedSlot = previous;
+        return true;
+    }
+
     private void registerMaceHit(LocalPlayer p, int maceSlot) {
         maceHit = true;
         lastMaceHitTime = System.currentTimeMillis();
         lastHitAt = lastMaceHitTime;
         lastAttackTick = p.tickCount;
 
-        if (!stayOnMace.getValue() && swapBack.getValue() && savedSlot != -1 && maceSlot != savedSlot) {
-            restoreTick = p.tickCount + swapBackDelay.getValue();
+        if (restore.getValue() && savedSlot != -1 && maceSlot != savedSlot) {
+            restoreTick = p.tickCount + restoreDelay.getValue();
         } else {
             savedSlot = -1;
             restoreTick = -1;
@@ -370,9 +389,7 @@ public class AutoMace extends Feature {
     private void restoreSlotIfDue(LocalPlayer p) {
         if (restoreTick < 0 || savedSlot < 0) return;
         if (p.tickCount < restoreTick) return;
-        if (!stayOnMace.getValue()) {
-            InventoryUtils.setInvSlot(savedSlot);
-        }
+        if (restore.getValue() && !changeSlot(p, savedSlot)) return; // a swap already happened this tick
         savedSlot = -1;
         restoreTick = -1;
     }

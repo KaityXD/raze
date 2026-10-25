@@ -38,9 +38,9 @@ public class SilentRotation extends Feature {
             o -> returnToView.getValue()
     ).describedBy(Concat.of("Degrees per second used when returning to your view"));
 
-    private final BoolSetting startFromCamera = new BoolSetting(
-            Concat.of("Start From Camera"), true
-    ).describedBy(Concat.of("Begin every aim from your current camera rotation instead of the last sent one"));
+    // Hardcoded: every aim always starts from the current camera rotation instead of
+    // the last sent one. Kept as a constant (no setting) so it can never be turned off.
+    private static final boolean START_FROM_CAMERA = true;
 
     private final FloatSetting speedMultiplier = new FloatSetting(
             Concat.of("Speed Multiplier"), 1.0F, 0.1F, 3.0F, 0.05F
@@ -79,7 +79,7 @@ public class SilentRotation extends Feature {
     }
 
     public boolean isStartFromCamera() {
-        return startFromCamera.getValue();
+        return START_FROM_CAMERA;
     }
 
     public float getSpeedMultiplier() {
@@ -129,7 +129,6 @@ public class SilentRotation extends Feature {
     }
 
     public static boolean startFromCameraEnabled() {
-        SilentRotation sr = get();
-        return sr == null || sr.isStartFromCamera();
+        return true;
     }
 }
