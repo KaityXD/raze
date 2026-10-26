@@ -16,6 +16,15 @@ import hack.raze.client.features.impl.combat.ShieldStun;
 import hack.raze.client.features.impl.movement.StrafeFix;
 import hack.raze.client.features.impl.misc.AutoTotem;
 import hack.raze.client.features.impl.misc.ClickGUI;
+import hack.raze.client.features.impl.base.StashRadar;
+import hack.raze.client.features.impl.base.DebrisScout;
+import hack.raze.client.features.impl.base.SusChunkScanner;
+import hack.raze.client.features.impl.base.ChunkFlowTracker;
+import hack.raze.client.features.impl.base.GeodeScout;
+import hack.raze.client.features.impl.base.BlockScout;
+import hack.raze.client.features.impl.base.FindingsList;
+import hack.raze.client.features.impl.base.LogoutTracker;
+import hack.raze.client.features.impl.base.TrailHeadFinder;
 import lombok.Getter;
 
 import java.util.*;
@@ -50,6 +59,15 @@ public class FeatureManager {
         features.add(new Backtrack());
         features.add(new KillAura());
         features.add(new StrafeFix());
+        features.add(new StashRadar());
+        features.add(new DebrisScout());
+        features.add(new SusChunkScanner());
+        features.add(new ChunkFlowTracker());
+        features.add(new GeodeScout());
+        features.add(new BlockScout());
+        features.add(new FindingsList());
+        features.add(new LogoutTracker());
+        features.add(new TrailHeadFinder());
 
         features.forEach(Feature::initSettings);
         features.sort((a, b) -> compareCharSequenceIgnoreCase(a.getName(), b.getName()));
