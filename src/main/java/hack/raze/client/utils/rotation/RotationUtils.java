@@ -1,5 +1,7 @@
 package hack.raze.client.utils.rotation;
 
+import hack.raze.client.features.impl.utility.SilentRotation;
+
 import hack.raze.client.auth.MathProt;
 import hack.raze.client.event.EventSubscribe;
 import hack.raze.client.features.Feature;
@@ -263,12 +265,28 @@ public final class RotationUtils implements Imports {
             return false;
         }
 
-        float delta = getDeltaSeconds();
-        float speedMultiplier = scaleSpeed ? (silent ? 2.5f : 0.5f) : 1.0f;
+        if (!SilentRotation.returnToViewEnabled()) {
+            lastRotations[0] = clientRot[0];
+            lastRotations[1] = clientRot[1];
+            if (silent) applySilentRotations(lastRotations);
+            RotationHandler.syncToPlayer(mc.player.getYRot(), mc.player.getXRot());
+            lastSentRotations[0] = mc.player.getYRot();
+            lastSentRotations[1] = mc.player.getXRot();
+            isTracking = false;
+            currentTarget = null;
+            currentController = null;
+            currentPriority = EventSubscribe.Priority.LOWEST;
+            return false;
+        }
 
+        float delta = getDeltaSeconds();
+        float globalMultiplier = SilentRotation.speedMultiplier();
+        float speedMultiplier = (scaleSpeed ? (silent ? 2.5f : 0.5f) : 1.0f) * globalMultiplier;
+
+        float returnSpeed = SilentRotation.returnSpeedOr(Math.min(yawSpeed, pitchSpeed));
         float[] lerped = new float[]{
-                lerpAngle(lastRotations[0], clientRot[0], delta, yawSpeed * speedMultiplier),
-                lerpAngle(lastRotations[1], clientRot[1], delta, pitchSpeed * speedMultiplier)
+                lerpAngle(lastRotations[0], clientRot[0], delta, returnSpeed * speedMultiplier),
+                lerpAngle(lastRotations[1], clientRot[1], delta, returnSpeed * speedMultiplier)
         };
 
         float yawDiff = Math.abs(Mth.wrapDegrees(lerped[0] - clientRot[0]));
@@ -380,7 +398,9 @@ public final class RotationUtils implements Imports {
         if (yawDiff <= 0.01f && pitchDiff <= 0.01f) return;
 
         float normalizedYaw = lastSentRotations[0] + Mth.wrapDegrees(rotations[0] - lastSentRotations[0]);
-        float normalizedPitch = Mth.clamp(enforcedPitch, -90f, 90f);
+        float normalizedPitch = SilentRotation.limitPitchEnabled()
+                ? Mth.clamp(enforcedPitch, -90f, 90f)
+                : enforcedPitch;
 
         RotationHandler.setServerRotationsWithDelta(normalizedYaw, normalizedPitch);
         RotationHandler.setHasSilentRotation(true);
@@ -768,6 +788,7 @@ public final class RotationUtils implements Imports {
         float yawDiff = Mth.wrapDegrees(current[0] - prev[0]);
         float pitchDiff = Mth.wrapDegrees(current[1] - prev[1]);
         float[] capped = new float[]{prev[0] + yawDiff, prev[1] + pitchDiff};
+        if (!SilentRotation.gcdFixEnabled()) return capped;
         return applyGCD(capped, prev);
     }
 
@@ -895,8 +916,13 @@ public final class RotationUtils implements Imports {
         public RotationBuilder silent(boolean s) { this.silent = s; return this; }
         public RotationBuilder windMouse() { this.aimType = AimType.WINDMOUSE; return this; }
         public RotationBuilder aimType(AimType t) { this.aimType = t; return this; }
-        public RotationBuilder speed(float s) { this.yawSpeed = s; this.pitchSpeed = s; return this; }
-        public RotationBuilder speed(float yaw, float pitch) { this.yawSpeed = yaw; this.pitchSpeed = pitch; return this; }
+        public RotationBuilder speed(float s) { return speed(s, s); }
+        public RotationBuilder speed(float yaw, float pitch) {
+            float mul = SilentRotation.speedMultiplier();
+            this.yawSpeed = yaw * mul;
+            this.pitchSpeed = pitch * mul;
+            return this;
+        }
         public RotationBuilder points(EntityPoints p) { this.points = p; return this; }
         public RotationBuilder multipoint(float m) { this.multipoint = m; return this; }
         public RotationBuilder random(boolean r) { this.random = r; return this; }

@@ -3,10 +3,10 @@ package hack.raze.client.handlers;
 import hack.raze.client.auth.MathProt;
 import lombok.Getter;
 import lombok.Setter;
+import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
-import static hack.raze.client.utils.Imports.mc;
 /**
  * Yes this is important.
  * Likely not finished.
@@ -69,17 +69,23 @@ public class RotationHandler {
     @Setter
     private static float viewSwapOrigPitch = 0f;
 
-    // Smoothed third-person preview rotations. Advances every frame:
-    // the head eases toward the sent rotation while the body follows it with the
-    // vanilla LivingEntity.tickHeadTurn dynamics instead of snapping to it.
+    // Third-person preview rotations, advanced once per tick like vanilla.
+    // The body uses the vanilla tickHeadTurn simulation and is interpolated at
+    // render time with Mth.rotLerp, instead of being eased per frame.
     @Getter
     private static float renderYaw;
     @Getter
+    private static float prevRenderYaw;
+    @Getter
     private static float renderPitch;
     @Getter
+    private static float prevRenderPitch;
+    @Getter
     private static float renderBodyYaw;
+    @Getter
+    private static float prevRenderBodyYaw;
     private static boolean renderInitialized;
-    private static long lastRenderNano;
+    private static boolean renderBodyYawActive;
 
     // Credit to Nami Client for helping me figure this out (the weird AimModulo360
     // flag)
@@ -116,81 +122,113 @@ public class RotationHandler {
     }
 
     /**
-     * Advance the third-person rotation preview. Called every frame.
-     *
-     * Head rotation eases toward the last sent rotation. The body chases the head with the
-     * vanilla {@code LivingEntity.tickHeadTurn} rules (0.3-per-tick lerp toward the target
-     * orientation, velocity direction bias while moving, view yaw snap while swinging and a
-     * capped max head offset relative to the body), rescaled from per-tick to per-frame.
+     * Advance the third-person preview once per tick, from the local player's tick.
+     * The head eases toward the sent rotation, and the body runs the same simulation
+     * as vanilla {@code LivingEntity.tickHeadTurn}: keep the current body yaw while
+     * idle, face the travel direction while moving, snap to the aim while swinging,
+     * and clamp how far the head may lead the body.
      */
-    public static void advanceRenderRotations() {
-        long n = System.nanoTime();
-
-        if (!isHasSilentRotation()) {
-            renderInitialized = false;
-            lastRenderNano = n;
-            return;
-        }
-
+    public static void updateRenderRotations(LocalPlayer player) {
         if (!renderInitialized) {
-            if (mc.player != null) {
-                float partialTick = mc.getDeltaTracker().getGameTimeDeltaPartialTick(false);
-                renderYaw = mc.player.getYRot();
-                renderPitch = mc.player.getXRot();
-                renderBodyYaw = Mth.rotLerp(partialTick, mc.player.yBodyRotO, mc.player.yBodyRot);
-            } else {
-                renderYaw = serverYaw;
-                renderPitch = serverPitch;
-                renderBodyYaw = serverYaw;
-            }
+            renderYaw = player.getYRot();
+            prevRenderYaw = player.yRotO;
+            renderPitch = player.getXRot();
+            prevRenderPitch = player.xRotO;
             renderInitialized = true;
-            lastRenderNano = n;
+        } else {
+            prevRenderYaw = renderYaw;
+            prevRenderPitch = renderPitch;
+            renderYaw += Mth.wrapDegrees(serverYaw - renderYaw) * 0.4F;
+            renderPitch += (serverPitch - renderPitch) * 0.4F;
+        }
+
+        updateRenderBodyYaw(player, serverYaw);
+    }
+
+    public static void updateRenderBodyYaw(LocalPlayer player, float aimYaw) {
+        if (!renderBodyYawActive) {
+            renderBodyYaw = player.yBodyRot;
+            prevRenderBodyYaw = player.yBodyRotO;
+            renderBodyYawActive = true;
+        } else {
+            prevRenderBodyYaw = renderBodyYaw;
+        }
+
+        double dx = player.getX() - player.xo;
+        double dz = player.getZ() - player.zo;
+        float targetBodyYaw = renderBodyYaw;
+
+        if (dx * dx + dz * dz > 0.0025D) {
+            float moveYaw = (float) Math.toDegrees(Math.atan2(dz, dx)) - 90.0F;
+            float viewDiff = Math.abs(Mth.wrapDegrees(aimYaw - moveYaw));
+            targetBodyYaw = (viewDiff > 95.0F && viewDiff < 265.0F) ? moveYaw - 180.0F : moveYaw;
+        }
+        if (player.attackAnim > 0.0F) {
+            targetBodyYaw = aimYaw;
+        }
+
+        renderBodyYaw += Mth.wrapDegrees(targetBodyYaw - renderBodyYaw) * 0.3F;
+
+        float headDelta = Mth.wrapDegrees(aimYaw - renderBodyYaw);
+        headDelta = Mth.clamp(headDelta, -75.0F, 75.0F);
+        renderBodyYaw = aimYaw - headDelta;
+        if (headDelta * headDelta > 2500.0F) {
+            renderBodyYaw += headDelta * 0.2F;
+        }
+
+        while (renderBodyYaw - prevRenderBodyYaw < -180.0F) prevRenderBodyYaw -= 360.0F;
+        while (renderBodyYaw - prevRenderBodyYaw >= 180.0F) prevRenderBodyYaw += 360.0F;
+    }
+
+    // Per-frame third-person head smoothing. Advanced while rendering (so it runs at
+    // frame rate, not tick rate) using a frame-rate independent exponential factor.
+    // A handful of float ops per frame -- no measurable FPS cost.
+    private static final float FRAME_SMOOTHING = 30.0F;
+    private static final long FRAME_STALE_NANOS = 250_000_000L;
+    private static float frameYaw;
+    private static float framePitch;
+    private static long frameNanos;
+    private static boolean frameInit;
+
+    public static void updateFrameRenderRotations() {
+        long now = System.nanoTime();
+        if (!frameInit || now - frameNanos > FRAME_STALE_NANOS) {
+            frameYaw = serverYaw;
+            framePitch = serverPitch;
+            frameNanos = now;
+            frameInit = true;
             return;
         }
+        float dt = (now - frameNanos) / 1.0E9F;
+        frameNanos = now;
+        if (dt <= 0.0F) return;
+        if (dt > 0.1F) dt = 0.1F;
+        float alpha = 1.0F - (float) Math.exp(-FRAME_SMOOTHING * dt);
+        frameYaw += Mth.wrapDegrees(serverYaw - frameYaw) * alpha;
+        framePitch += (serverPitch - framePitch) * alpha;
+    }
 
-        float dt = (n - lastRenderNano) / 1.0E9F;
-        lastRenderNano = n;
-        if (dt > 0.25F) dt = 0.25F;
-        if (dt <= 1.0E-5F) return;
+    public static float getFrameRenderYaw() {
+        return frameYaw;
+    }
 
-        // Head: time-normalized ease toward the last sent rotation
-        float headEase = 1.0F - (float) Math.pow(0.6D, dt / 0.05D);
-        renderYaw += Mth.wrapDegrees(serverYaw - renderYaw) * headEase;
-        renderPitch += (serverPitch - renderPitch) * headEase;
+    public static float getFrameRenderPitch() {
+        return framePitch;
+    }
 
-        // Body: vanilla body simulation, scaled from per-tick to per-frame
-        float deltaTicks = dt / 0.05F;
-        float chase = Math.min(0.3F * deltaTicks, 1.0F);
-        float bodyTarget = renderYaw;
-
-        if (mc.player != null) {
-            // Vanilla: while moving, the body aims at the direction of travel
-            Vec3 velocity = mc.player.getDeltaMovement();
-            double velDistSq = velocity.x * velocity.x + velocity.z * velocity.z;
-            if (velDistSq > 0.0025D) {
-                float velYaw = (float) (Math.toDegrees(Math.atan2(velocity.z, velocity.x))) - 90.0F;
-                float viewDiff = Math.abs(Mth.wrapDegrees(renderYaw - velYaw));
-                bodyTarget = (viewDiff > 95.0F && viewDiff < 265.0F) ? velYaw + 180.0F : velYaw;
-            }
-            // Vanilla: while swinging, the body faces the view direction
-            if (mc.player.attackAnim > 0.0F) {
-                bodyTarget = renderYaw;
-            }
-        }
-
-        renderBodyYaw += Mth.wrapDegrees(bodyTarget - renderBodyYaw) * chase;
-        float bodyHeadDiff = Mth.wrapDegrees(renderYaw - renderBodyYaw);
-        float maxHeadFromBody = mc.player != null && mc.player.isBlocking() ? 15.0F : 50.0F;
-        if (Math.abs(bodyHeadDiff) > maxHeadFromBody) {
-            renderBodyYaw += bodyHeadDiff - Mth.sign(bodyHeadDiff) * maxHeadFromBody;
-        }
-        renderBodyYaw = Mth.wrapDegrees(renderBodyYaw);
+    public static void clearRenderBodyYaw() {
+        renderBodyYawActive = false;
+        renderBodyYaw = 0.0F;
+        prevRenderBodyYaw = 0.0F;
+        renderInitialized = false;
     }
 
     public static void reset() {
         serverDeltaYaw = 0f;
         hasSilentRotation = false;
         renderInitialized = false;
+        frameInit = false;
+        clearRenderBodyYaw();
     }
 
     public static void syncToPlayer(float playerYaw, float playerPitch) {
@@ -203,6 +241,8 @@ public class RotationHandler {
         serverPitch = Mth.clamp(enforcedPitch, -90f, 90f);
         serverDeltaYaw = 0f;
         hasSilentRotation = false;
+        renderInitialized = false;
+        clearRenderBodyYaw();
     }
 
     public static Vec3 getRotationVector(float pitch, float yaw) {

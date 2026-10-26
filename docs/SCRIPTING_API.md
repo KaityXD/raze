@@ -76,7 +76,7 @@ export enum Category {
   Combat   = "COMBAT",
   Movement = "MOVEMENT",
   Render   = "RENDER",
-  Macros   = "MACROS",
+  Blatant  = "BLATANT",
   Utility  = "UTILITY",
 }
 ```

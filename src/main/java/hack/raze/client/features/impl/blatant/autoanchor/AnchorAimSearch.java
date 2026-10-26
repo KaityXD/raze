@@ -1,4 +1,4 @@
-package hack.raze.client.features.impl.combat.autoanchor;
+package hack.raze.client.features.impl.blatant.autoanchor;
 
 import hack.raze.client.utils.Imports;
 import net.minecraft.core.BlockPos;

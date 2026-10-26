@@ -38,6 +38,7 @@
     "entity.MixinInventory",
     "entity.MixinItem",
     "entity.MixinLivingEntity",
+    "entity.MixinLivingEntityRenderer",
     "entity.MixinLocalPlayer",
     "entity.MixinPlayer",
     "input.MixinClientInput",

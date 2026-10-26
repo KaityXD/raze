@@ -1,4 +1,4 @@
-package hack.raze.client.features.impl.combat;
+package hack.raze.client.features.impl.blatant;
 
 import hack.raze.client.api.AttackRangeCompat;
 import hack.raze.client.api.MinecraftCompat;
@@ -68,13 +68,15 @@ import java.util.List;
  *     newly appeared target, so it never runs on a perfect metronome.</li>
  * </ul>
  */
+
+ // TODO: remove this ai ass comment by dylen wtf???
 public class CrystalAura extends Feature {
 
     public CrystalAura() {
         super(new FeatureInfo(
             Concat.of("Crystal Aura"),
-            Concat.of("Places, detonates and optimises end crystals"),
-            Category.COMBAT
+            Concat.of("Giving aura to user and fight with the jews"),
+            Category.BLATANT
         ));
         itemWhitelist.setSelected(Items.END_CRYSTAL, true);
     }

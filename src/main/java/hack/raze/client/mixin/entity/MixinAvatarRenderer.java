@@ -16,8 +16,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(AvatarRenderer.class)
 public class MixinAvatarRenderer {
 
-    // Third-person silent aim: head looks at the sent rotation, body follows it
-    // (vanilla head-turn dynamics) instead of rotating as one unit
+    // Third-person silent aim: the head points at the sent rotation while the
+    // body keeps the vanilla tick simulation and interpolates like any other
+    // LivingEntityRenderer state.
     @Inject(method = "extractRenderState", at = @At("TAIL"))
     private void raze$applyServerHeadRotation(Avatar player, AvatarRenderState state, float tickProgress, CallbackInfo ci) {
         if (Raze.isDestroyed) return;
@@ -29,12 +30,12 @@ public class MixinAvatarRenderer {
         if (perspective.isFirstPerson()) return;
         if (!RotationHandler.isHasSilentRotation()) return;
 
-        float headRot = RotationHandler.getRenderYaw();
-        float bodyRot = RotationHandler.getRenderBodyYaw();
+        RotationHandler.updateFrameRenderRotations();
 
-        state.bodyRot = bodyRot;
-        state.yRot = Mth.wrapDegrees(headRot - bodyRot);
-        state.xRot = Mth.clamp(RotationHandler.getRenderPitch(), -90.0f, 90.0f);
+        float bodyYaw = Mth.rotLerp(tickProgress, player.yBodyRotO, player.yBodyRot);
+        state.bodyRot = bodyYaw;
+        state.yRot = Mth.wrapDegrees(RotationHandler.getFrameRenderYaw() - bodyYaw);
+        state.xRot = Mth.clamp(RotationHandler.getFrameRenderPitch(), -90.0f, 90.0f);
     }
 
 

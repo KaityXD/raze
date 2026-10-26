@@ -65,6 +65,9 @@ public abstract class MixinLocalPlayer extends AbstractClientPlayer {
     @Unique
     private EventMove raze$currentMoveEvent;
 
+    @Unique
+    private boolean raze$renderAdvanced;
+
     @Inject(method = "sendPosition", at = @At("HEAD"), cancellable = true)
     private void raze$onSendMovementPacketsHead(CallbackInfo ci) {
         if (Raze.isDestroyed) return;
@@ -90,6 +93,28 @@ public abstract class MixinLocalPlayer extends AbstractClientPlayer {
         EventMove postEvent = new EventMove.Post(this.getX(), this.getY(), this.getZ(), this.onGround(), this.getYRot(), this.getXRot());
         postEvent.call();
         this.raze$currentMoveEvent = null;
+
+        raze$syncSilentRenderRotations((LocalPlayer) (Object) this, true);
+    }
+
+    @Inject(method = "tick", at = @At("RETURN"))
+    private void raze$onTickReturn(CallbackInfo ci) {
+        if (Raze.isDestroyed) return;
+        raze$syncSilentRenderRotations((LocalPlayer) (Object) this, false);
+    }
+
+    @Unique
+    private void raze$syncSilentRenderRotations(LocalPlayer player, boolean advance) {
+        if (!RotationHandler.isHasSilentRotation()) {
+            RotationHandler.clearRenderBodyYaw();
+            return;
+        }
+        if (advance || !raze$renderAdvanced) {
+            RotationHandler.updateRenderRotations(player);
+            raze$renderAdvanced = true;
+        }
+        player.yHeadRot = RotationHandler.getServerYaw();
+        player.yBodyRot = RotationHandler.getRenderBodyYaw();
     }
 
     @ModifyExpressionValue(method = "sendPosition", at = @At(value = "INVOKE", target = "Lnet/minecraft/client/player/LocalPlayer;getX()D"))
@@ -155,6 +180,7 @@ public abstract class MixinLocalPlayer extends AbstractClientPlayer {
     @Inject(method = "tick", at = @At("HEAD"))
     public void tick(CallbackInfo ci) {
         if (Raze.isDestroyed) return;
+        raze$renderAdvanced = false;
         EventClientPlayerTick e = new EventClientPlayerTick();
         e.call();
         if (e.cancelled) {

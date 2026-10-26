@@ -8,7 +8,7 @@ public enum Category {
     COMBAT(Concat.of("Combat"), TextLuicideConstants.swords),
     MOVEMENT(Concat.of("Movement"), TextLuicideConstants.gauge),
     RENDER(Concat.of("Visuals"), TextLuicideConstants.scanEye),
-    MACROS(Concat.of("Macros"), TextLuicideConstants.wrench),
+    BLATANT(Concat.of("Blatant"), TextLuicideConstants.wrench),
     UTILITY(Concat.of("Utility"), TextLuicideConstants.user),
     INTERNALS(Concat.of("Internals"), TextLuicideConstants.cog),
 //    HUD(Concat.of("HUD"), TextLuicideConstants.textAlignStart)

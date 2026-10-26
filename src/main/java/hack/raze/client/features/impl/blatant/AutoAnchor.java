@@ -1,4 +1,4 @@
-package hack.raze.client.features.impl.combat;
+package hack.raze.client.features.impl.blatant;
 
 import hack.raze.client.event.EventSubscribe;
 import hack.raze.client.event.impl.EventMove;
@@ -9,7 +9,7 @@ import hack.raze.client.event.impl.MouseUpdateEvent;
 import hack.raze.client.features.Category;
 import hack.raze.client.features.Feature;
 import hack.raze.client.features.FeatureInfo;
-import hack.raze.client.features.impl.combat.autoanchor.AnchorAimSearch;
+import hack.raze.client.features.impl.blatant.autoanchor.AnchorAimSearch;
 import hack.raze.client.features.settings.impl.BoolSetting;
 import hack.raze.client.features.settings.impl.ColorSetting;
 import hack.raze.client.features.settings.impl.FloatSetting;
@@ -85,7 +85,7 @@ public class AutoAnchor extends Feature {
         super(new FeatureInfo(
                 Concat.of("Auto Anchor"),
                 Concat.of("Places anchors at the optimal position near your target"),
-                Category.COMBAT
+                Category.BLATANT
         ));
     }
 

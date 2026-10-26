@@ -29,6 +29,7 @@ public class AimAssist extends Feature {
     private final BoolSetting ph = new BoolSetting("Aim Pitch", true);
     private final BoolSetting mm = new BoolSetting("On Mouse Move", true);
     private final ModeSetting ap = new ModeSetting("Aim Point", "Dynamic", "Dynamic", "Head", "Center", "Closest");
+    private final ModeSetting at = new ModeSetting("Aim Type", "Smooth", "Smooth", "Linear", "Lerp");
     private final BoolSetting mb = new BoolSetting("Mobs", false);
 
     private float ly;
@@ -120,13 +121,27 @@ public class AimAssist extends Feature {
             }
         }
 
-        float sy = yd * x * dh * ft;
-        float sx = pd * v * dv * ft;
+        float sy;
+        float sx;
+        if (at.is("Linear")) {
+            float mh = x * 45.0F * ft;
+            float mv = v * 45.0F * ft;
+            sy = Math.copySign(Math.min(Math.abs(yd), mh), yd) * dh;
+            sx = Math.copySign(Math.min(Math.abs(pd), mv), pd) * dv;
+        } else if (at.is("Lerp")) {
+            float ay = Mth.clamp(sp.getValue() * ft, 0.0F, 1.0F);
+            float av = Mth.clamp(sp.getValue() * 0.67F * ft, 0.0F, 1.0F);
+            sy = yd * dh * ay;
+            sx = pd * dv * av;
+        } else {
+            sy = yd * x * dh * ft;
+            sx = pd * v * dv * ft;
 
-        float mh = x * 45.0F * ft;
-        float mv = v * 45.0F * ft;
-        sy = Mth.clamp(sy, -mh, mh);
-        sx = Mth.clamp(sx, -mv, mv);
+            float mh = x * 45.0F * ft;
+            float mv = v * 45.0F * ft;
+            sy = Mth.clamp(sy, -mh, mh);
+            sx = Mth.clamp(sx, -mv, mv);
+        }
 
         float s = mc.options.sensitivity().get().floatValue() * 0.6F + 0.2F;
         float g = s * s * s * 1.2F;

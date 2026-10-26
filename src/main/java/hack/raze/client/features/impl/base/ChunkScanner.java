@@ -11,10 +11,10 @@ import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.chunk.LevelChunk;
 
 /** Local heuristic for chunks with several signs of player construction. */
-public final class SusChunkScanner extends BaseFinderFeature {
+public final class ChunkScanner extends BaseFinderFeature {
     private final IntSetting minimumScore = new IntSetting("Minimum signal score", 35, 10, 100, "%");
 
-    public SusChunkScanner() { super("Settlement Scanner", "Scores loaded chunks for signs of player-built bases"); }
+    public ChunkScanner() { super("Settlement Scanner", "Scores loaded chunks for signs of player-built bases"); }
 
     @EventSubscribe private void update(EventSystemUpdate event) { scanTick(event); }
 

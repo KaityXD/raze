@@ -4,7 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import hack.raze.client.Raze;
 import hack.raze.client.api.ScreenCompat;
 import hack.raze.client.event.EventSubscribe;
-import hack.raze.client.event.impl.EventClientPlayerTick;
+import hack.raze.client.event.impl.EventHandleInput;
 import hack.raze.client.event.impl.EventItemUse;
 import hack.raze.client.event.impl.EventPerformUseItemOn;
 import hack.raze.client.features.Category;
@@ -48,6 +48,8 @@ import static hack.raze.client.utils.Imports.mc;
  */
 public final class AutoCrystal extends Feature {
 
+    private static final int PLACE_WAIT_TIMEOUT_TICKS = 40;
+
     private static volatile long forcedUntil;
 
     private final FloatSetting placeDelay = new FloatSetting("Place Delay", 1.0F, 0.0F, 20.0F, 1.0F);
@@ -71,6 +73,7 @@ public final class AutoCrystal extends Feature {
     private int placeCooldown;
     private boolean placedObsidian;
     private BlockPos expectedPlacementPos;
+    private int placeWaitTicks;
     private int swapRootSlot = -1;
 
     // input simulator state
@@ -120,7 +123,7 @@ public final class AutoCrystal extends Feature {
     // -- events --
 
     @EventSubscribe
-    private void onTick(EventClientPlayerTick event) {
+    private void onTick(EventHandleInput.Early event) {
         if (!isEnabled() || isNull()) return;
         if (ScreenCompat.hasScreen(mc)) {
             resetSequence();
@@ -439,6 +442,7 @@ public final class AutoCrystal extends Feature {
         placeCooldown = 0;
         placedObsidian = false;
         expectedPlacementPos = null;
+        placeWaitTicks = 0;
         swapRootSlot = -1;
         simulateAttackNext = true;
         blindPlaceNext = true;
@@ -470,6 +474,7 @@ public final class AutoCrystal extends Feature {
 
     private void activateSequence() {
         if (mc.level == null || !(mc.hitResult instanceof BlockHitResult blockHit)) return;
+        placeWaitTicks = 0;
 
         BlockPos pos = blockHit.getBlockPos();
         BlockState hitState = mc.level.getBlockState(pos);
@@ -521,10 +526,11 @@ public final class AutoCrystal extends Feature {
                         obsidianSlot = InventoryUtils.findItemWithPredicateInHotbar(stack -> stack.is(Items.BEDROCK));
                     }
                     if (obsidianSlot == -1 || !swapToIfNeeded(obsidianSlot)) {
-                        stage = Stage.None;
+                        abortSequence();
                         break;
                     }
                     stage = Stage.PlaceObsidian;
+                    placeWaitTicks = 0;
                 }
                 case PlaceObsidian -> {
                     if (placedObsidian && expectedPlacementPos != null) {
@@ -538,34 +544,50 @@ public final class AutoCrystal extends Feature {
                             continue;
                         }
 
+                        placedObsidian = false;
+                        expectedPlacementPos = null;
                         placeCooldown = (int) placeObsidianDelay.getValue();
+                        placeWaitTicks = 0;
                         return;
                     }
 
-                    if (mc.hitResult instanceof BlockHitResult blockHit) {
-                        if (mc.level == null) return;
-                        BlockPos placementPos = resolvePlacementPos(blockHit);
-                        BlockState placementState = mc.level.getBlockState(placementPos);
-                        Block placementBlock = placementState.getBlock();
+                    if (!(mc.hitResult instanceof BlockHitResult blockHit)) {
+                        if (++placeWaitTicks > PLACE_WAIT_TIMEOUT_TICKS) abortSequence();
+                        return;
+                    }
 
-                        if (placementBlock == Blocks.OBSIDIAN || placementBlock == Blocks.BEDROCK) {
-                            stage = Stage.SwitchCrystal;
-                            switchCooldown = (int) switchDelay.getValue();
-                            placedObsidian = false;
-                            expectedPlacementPos = null;
-                        } else if (placementState.isAir() || placementState.canBeReplaced()) {
-                            clickMapping(mc.options.keyUse);
-                            placedObsidian = true;
-                            expectedPlacementPos = placementPos;
-                        } else {
-                            stage = Stage.None;
-                        }
+                    if (mc.level == null) return;
+                    BlockState clickedState = mc.level.getBlockState(blockHit.getBlockPos());
+                    if (isValidBase(clickedState)) {
+                        stage = Stage.SwitchCrystal;
+                        switchCooldown = (int) switchDelay.getValue();
+                        placedObsidian = false;
+                        expectedPlacementPos = null;
+                        continue;
+                    }
+
+                    BlockPos placementPos = resolvePlacementPos(blockHit);
+                    BlockState placementState = mc.level.getBlockState(placementPos);
+                    Block placementBlock = placementState.getBlock();
+
+                    if (placementBlock == Blocks.OBSIDIAN || placementBlock == Blocks.BEDROCK) {
+                        stage = Stage.SwitchCrystal;
+                        switchCooldown = (int) switchDelay.getValue();
+                        placedObsidian = false;
+                        expectedPlacementPos = null;
+                    } else if (placementState.isAir() || placementState.canBeReplaced()) {
+                        clickMapping(mc.options.keyUse);
+                        placedObsidian = true;
+                        expectedPlacementPos = placementPos;
+                        placeWaitTicks = 0;
+                    } else {
+                        abortSequence();
                     }
                 }
                 case SwitchCrystal -> {
                     int crystalSlot = InventoryUtils.findItemWithPredicateInHotbar(stack -> stack.is(Items.END_CRYSTAL));
                     if (crystalSlot == -1 || !swapToIfNeeded(crystalSlot)) {
-                        stage = Stage.None;
+                        abortSequence();
                         break;
                     }
                     stage = Stage.Done;
@@ -577,6 +599,13 @@ public final class AutoCrystal extends Feature {
                 case None -> { }
             }
         }
+    }
+
+    private void abortSequence() {
+        stage = Stage.None;
+        placedObsidian = false;
+        expectedPlacementPos = null;
+        restoreSwap(switchBack.getValue());
     }
 
     private boolean swapToIfNeeded(int slot) {

@@ -122,12 +122,23 @@ public class FloatSetting extends Setting {
     }
 
     public void setValue(float value) {
-        this.value = Math.max(minValue, Math.min(maxValue, value));
+        this.value = quantize(value);
         notifyChange();
     }
 
     public void setValueNoNotify(float value) {
-        this.value = Math.max(minValue, Math.min(maxValue, value));
+        this.value = quantize(value);
+    }
+
+    /** Snaps to {@link #increment} so sliders land on real steps (3.0 stays 3.0, not 2.87). */
+    private float quantize(float value) {
+        float clamped = Math.max(minValue, Math.min(maxValue, value));
+        if (increment <= 0.0F) return clamped;
+        float steps = Math.round((clamped - minValue) / increment);
+        float snapped = minValue + steps * increment;
+        float decimals = Math.max(0, Math.round(-(float) Math.log10(increment)));
+        float scale = (float) Math.pow(10.0D, Math.min(6, decimals));
+        return Math.max(minValue, Math.min(maxValue, Math.round(snapped * scale) / scale));
     }
 
     @Override

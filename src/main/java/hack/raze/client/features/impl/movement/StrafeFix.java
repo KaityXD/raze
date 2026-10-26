@@ -15,7 +15,7 @@ import net.minecraft.util.Mth;
 public class StrafeFix extends Feature {
 
     private final ModeSetting md = new ModeSetting("Mode", "Silent", "Silent", "Strict");
-    private final BoolSetting sf = new BoolSetting("Sprint Fix", true);
+    private final BoolSetting sf = new BoolSetting("Sprint Fix", false);
 
     private boolean swapped;
     private float svy;
