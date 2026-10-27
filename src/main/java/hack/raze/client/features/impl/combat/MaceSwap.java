@@ -5,6 +5,7 @@ import hack.raze.client.event.impl.EventOnAttackEntity;
 import hack.raze.client.event.impl.EventStartAttack;
 import hack.raze.client.features.Category;
 import hack.raze.client.features.Feature;
+import hack.raze.client.features.FeatureManager;
 import hack.raze.client.features.FeatureInfo;
 import hack.raze.client.features.settings.impl.BoolSetting;
 import hack.raze.client.features.settings.impl.FloatSetting;
@@ -42,6 +43,7 @@ public class MaceSwap extends Feature {
     @EventSubscribe
     private void ca(EventStartAttack e) {
         if (!isEnabled() || isNull()) return;
+        if (e.cancelled || anotherFeatureOwnsSwap()) return;
         if (mc.player.tickCount == lt) return;
         if (!wc()) return;
         if (SwapStateManager.isActive(this)) return;
@@ -60,6 +62,7 @@ public class MaceSwap extends Feature {
     @EventSubscribe
     private void aa(EventOnAttackEntity.Pre e) {
         if (!isEnabled() || isNull()) return;
+        if (e.cancelled || anotherFeatureOwnsSwap()) return;
         if (mc.player.tickCount == lt) return;
         if (!wc()) return;
         if (SwapStateManager.isActive(this)) return;
@@ -127,6 +130,13 @@ public class MaceSwap extends Feature {
         if (m == -1) return -1;
         if (m == SwapStateManager.getSelectedSlot()) return -1;
         return m;
+    }
+
+    private boolean anotherFeatureOwnsSwap() {
+        if (SwapStateManager.hasActiveSwaps() && !SwapStateManager.isActive(this)) return true;
+        return FeatureManager.safeGetFeature(AutoMace.class)
+                .map(AutoMace::isSwappingWeapon)
+                .orElse(false);
     }
 
     private int fm() {
