@@ -120,6 +120,18 @@ public class AutoMace extends Feature {
             20.0F,
             0.5F
     );
+    private final ModeSetting maceSelection = new ModeSetting(
+            Concat.of("Mace Selection"),
+            Concat.of("Manual"),
+            Concat.of("Manual"),
+            Concat.of("Auto")
+    );
+    private final ModeSetting maceType = new ModeSetting(
+            Concat.of("Mace Type"),
+            Concat.of("Density"),
+            Concat.of("Density"),
+            Concat.of("Breach")
+    );
     private final IntSetting reactionDelay = new IntSetting(
             Concat.of("Reaction Delay"),
             0,
@@ -317,6 +329,12 @@ public class AutoMace extends Feature {
             return;
         }
 
+        if (SwapStateManager.hasActiveSwaps() && !SwapStateManager.isActive(this)) {
+            target = null;
+            cleanupAim();
+            return;
+        }
+
         LocalPlayer p = mc.player;
         updateFall(p);
 
@@ -412,6 +430,13 @@ public class AutoMace extends Feature {
     private void onMotion(EventMotion.Pre event) {
         if (!isEnabled() || isNull() || ScreenCompat.hasScreen(mc)) {
             target = null;
+            return;
+        }
+
+        if (SwapStateManager.hasActiveSwaps() && !SwapStateManager.isActive(this)) {
+            target = null;
+            cleanupAim();
+            processPendingRestore(mc.player);
             return;
         }
 
@@ -975,6 +1000,7 @@ public class AutoMace extends Feature {
 
     private boolean setSlot(LocalPlayer p, int slot) {
         if (slot < 0 || slot > 8) return false;
+        if (SwapStateManager.hasActiveSwaps() && !SwapStateManager.isActive(this)) return false;
         if (p.getInventory().getSelectedSlot() == slot) return true;
         if (p.tickCount == lastSwapTick) return false;
 
@@ -994,11 +1020,17 @@ public class AutoMace extends Feature {
     }
 
     private boolean swapTo(LocalPlayer p, int slot) {
+        if (SwapStateManager.hasActiveSwaps() && !SwapStateManager.isActive(this)) return false;
         int previous = p.getInventory().getSelectedSlot();
         if (previous == slot) return true;
         if (!setSlot(p, slot)) return false;
         if (savedSlot == NO_SLOT) savedSlot = previous;
         return true;
+    }
+
+    /** True while AutoMace has temporarily taken control of the selected hotbar slot. */
+    public boolean isSwappingWeapon() {
+        return savedSlot != NO_SLOT;
     }
 
     private void processPendingRestore(LocalPlayer p) {
@@ -1107,7 +1139,9 @@ public class AutoMace extends Feature {
     }
 
     private int findMace(LocalPlayer p, double fallDistance) {
-        boolean useDensity = p.fallDistance >= densityThreshold.getValue() || fallDistance >= densityThreshold.getValue();
+        boolean useDensity = maceSelection.is(Concat.of("Manual"))
+                ? maceType.is(Concat.of("Density"))
+                : p.fallDistance >= densityThreshold.getValue() || fallDistance >= densityThreshold.getValue();
         int preferred = useDensity
                 ? InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.DENSITY, false)
                 : InventoryUtils.findMaceWithEnchantmentInHotbar(Enchantments.BREACH, false);
