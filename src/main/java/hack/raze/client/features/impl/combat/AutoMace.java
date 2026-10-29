@@ -767,6 +767,9 @@ public class AutoMace extends Feature {
         return t.getBoundingBox().move(offset);
     }
 
+    // NOTE / TODO: We need to stop using raycast because it made the automace inconsistent as fuck.
+    // Raycasting against bounding boxes during high fall speeds / rapid pitch changes causes missed swings
+    // and erratic timing drops. Look into a reliable alternative approach.
     /**
      * Ray-cast reach check matching server-side validation (such as GrimAC / vanilla).
      * <p>
@@ -847,6 +850,7 @@ public class AutoMace extends Feature {
         return true;
     }
 
+    // NOTE: Need to replace this raycast-based reach check; it makes AutoMace inconsistent as fuck.
     private boolean inReach(LocalPlayer p, LivingEntity t) {
         return isRayReachable(p, t, range.getValue());
     }
